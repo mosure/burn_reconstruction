@@ -1,10 +1,13 @@
+#![recursion_limit = "512"]
+
 use std::path::PathBuf;
 
-use burn::prelude::Backend;
 use clap::{Parser, ValueEnum};
 
-use burn_gaussian_splatting::{
-    burn_yono::full_backbone_config,
+use burn_gaussian_splatting::backend::default_device;
+use burn_gaussian_splatting::backend::BackendImpl;
+use burn_yono::{
+    full_backbone_config,
     import::{
         load_yono_backbone_from_safetensors, load_yono_head_from_safetensors, report_apply_result,
         save_yono_backbone_record, save_yono_head_record, CheckpointFormat,
@@ -74,11 +77,9 @@ struct ImportConfig {
     pose_free: bool,
 }
 
-type BackendImpl = burn_gaussian_splatting::backend::BackendImpl;
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = ImportConfig::parse();
-    let device = <BackendImpl as Backend>::Device::default();
+    let device = default_device();
 
     if matches!(args.component, ComponentArg::Both | ComponentArg::Backbone) {
         let (model, result) = load_yono_backbone_from_safetensors::<BackendImpl>(

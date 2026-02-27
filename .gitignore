@@ -13,3 +13,11 @@ target/
 *.gcloud
 
 .DS_Store
+
+www/out/
+www/assets/
+tests/web_playwright/node_modules/
+
+
+tmp/
+web_playwright/

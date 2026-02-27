@@ -3,23 +3,12 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use burn::prelude::Backend;
 use burn_gaussian_splatting::{
-    burn_yono::{
-        glb::{GlbExportOptions, GlbSortMode},
-        inference::ApplySummary,
-    },
-    pipeline::{
-        ImageToGaussianPipeline, PipelineConfig, PipelineModel, PipelineQuality, YonoWeightFormat,
-        YonoWeights,
-    },
+    backend::default_device, ComponentLoadReport, ForwardTimings, GlbExportOptions,
+    GlbExportReport, GlbSortMode, ImageToGaussianPipeline, PipelineConfig, PipelineGaussians,
+    PipelineModel, PipelineQuality, PipelineWeights, YonoWeightFormat, YonoWeights,
 };
 use clap::{Parser, ValueEnum};
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum ModelArg {
-    Yono,
-}
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum QualityArg {
@@ -56,9 +45,6 @@ struct CliConfig {
     #[arg(long, default_value_t = 224)]
     image_size: usize,
 
-    #[arg(long, value_enum, default_value_t = ModelArg::Yono)]
-    model: ModelArg,
-
     #[arg(long, value_enum, default_value_t = QualityArg::Balanced)]
     quality: QualityArg,
 
@@ -86,21 +72,16 @@ struct CliConfig {
     #[arg(long, value_enum, default_value_t = WeightFormatArg::Safetensors)]
     weights_format: WeightFormatArg,
 
-    #[arg(
-        long,
-        default_value = "assets/models/yono_backbone_weights.safetensors"
-    )]
-    backbone_weights: PathBuf,
+    #[arg(long)]
+    backbone_weights: Option<PathBuf>,
 
-    #[arg(long, default_value = "assets/models/yono_head_weights.safetensors")]
-    head_weights: PathBuf,
+    #[arg(long)]
+    head_weights: Option<PathBuf>,
 }
-
-type BackendImpl = burn_gaussian_splatting::backend::BackendImpl;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = CliConfig::parse();
-    let device = <BackendImpl as Backend>::Device::default();
+    let device = default_device();
 
     if args.image_size % 14 != 0 {
         return Err(format!(
@@ -118,45 +99,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("--bench-iters must be > 0".into());
     }
 
-    let model = match args.model {
-        ModelArg::Yono => PipelineModel::Yono,
-    };
-
     let quality = match args.quality {
         QualityArg::Fast => PipelineQuality::Fast,
         QualityArg::Balanced => PipelineQuality::Balanced,
         QualityArg::High => PipelineQuality::High,
     };
 
-    let (pipeline, load_report) = ImageToGaussianPipeline::<BackendImpl>::load(
-        &device,
+    let weight_format = match args.weights_format {
+        WeightFormatArg::Safetensors => YonoWeightFormat::Safetensors,
+        WeightFormatArg::Bpk => YonoWeightFormat::Burnpack,
+    };
+
+    let weights = match (&args.backbone_weights, &args.head_weights) {
+        (Some(backbone), Some(head)) => PipelineWeights::from_yono(
+            YonoWeights::new(backbone.clone(), head.clone()).with_format(weight_format),
+        ),
+        (None, None) => {
+            let weights = PipelineWeights::resolve_or_bootstrap_yono(weight_format)?;
+            println!(
+                "[BOOTSTRAP] using cached YoNo weights:\n  backbone={}\n  head={}",
+                weights.yono.backbone.display(),
+                weights.yono.head.display()
+            );
+            weights
+        }
+        _ => {
+            return Err(
+                "`--backbone-weights` and `--head-weights` must be provided together".into(),
+            );
+        }
+    };
+
+    let (pipeline, load_report) = ImageToGaussianPipeline::load(
+        device,
         PipelineConfig {
-            model,
+            model: PipelineModel::Yono,
             quality,
             image_size: args.image_size,
         },
-        Some(
-            YonoWeights::new(args.backbone_weights, args.head_weights).with_format(
-                match args.weights_format {
-                    WeightFormatArg::Safetensors => YonoWeightFormat::Safetensors,
-                    WeightFormatArg::Bpk => YonoWeightFormat::Burnpack,
-                },
-            ),
-        ),
+        weights,
     )?;
 
-    if let Some(report) = load_report {
-        report_apply_summary("backbone", &report.backbone);
-        report_apply_summary("head", &report.head);
-    }
+    report_apply_summary("backbone", &load_report.backbone);
+    report_apply_summary("head", &load_report.head);
 
     let (gaussians, timed) = if args.profile {
         for _ in 0..args.warmup_iters {
-            let run = pipeline.run_images_timed(
-                args.images.as_slice(),
-                &device,
-                !args.single_sync_profile,
-            )?;
+            let run =
+                pipeline.run_images_timed(args.images.as_slice(), !args.single_sync_profile)?;
             if args.single_sync_profile {
                 sync_flat_gaussians(&run.gaussians);
             }
@@ -167,11 +157,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut output = None;
         for _ in 0..args.bench_iters {
             let wall_start = Instant::now();
-            let run = pipeline.run_images_timed(
-                args.images.as_slice(),
-                &device,
-                !args.single_sync_profile,
-            )?;
+            let run =
+                pipeline.run_images_timed(args.images.as_slice(), !args.single_sync_profile)?;
             if args.single_sync_profile {
                 sync_flat_gaussians(&run.gaussians);
             }
@@ -191,7 +178,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }),
         )
     } else {
-        (pipeline.run_images(args.images.as_slice(), &device)?, None)
+        (pipeline.run_images(args.images.as_slice())?, None)
     };
 
     let mut export = quality.export_options();
@@ -223,7 +210,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn report_apply_summary(name: &str, summary: &ApplySummary) {
+fn report_apply_summary(name: &str, summary: &ComponentLoadReport) {
     println!(
         "[LOAD] {name}: applied={} missing={} unused={} skipped={}",
         summary.applied,
@@ -249,17 +236,15 @@ fn report_apply_summary(name: &str, summary: &ApplySummary) {
 
 #[derive(Debug, Clone)]
 struct ProfileSummary {
-    timings: burn_gaussian_splatting::burn_yono::inference::ForwardTimings,
+    timings: ForwardTimings,
     wall: Duration,
     warmup_iters: usize,
     bench_iters: usize,
 }
 
-fn average_timings(
-    samples: &[burn_gaussian_splatting::burn_yono::inference::ForwardTimings],
-) -> burn_gaussian_splatting::burn_yono::inference::ForwardTimings {
+fn average_timings(samples: &[ForwardTimings]) -> ForwardTimings {
     if samples.is_empty() {
-        return burn_gaussian_splatting::burn_yono::inference::ForwardTimings::default();
+        return ForwardTimings::default();
     }
 
     let mut image_load_sum = 0.0f64;
@@ -280,7 +265,7 @@ fn average_timings(
     let head = Duration::from_secs_f64(head_sum / n);
     let total = Duration::from_secs_f64(total_sum / n);
 
-    burn_gaussian_splatting::burn_yono::inference::ForwardTimings {
+    ForwardTimings {
         image_load,
         backbone,
         head,
@@ -300,11 +285,7 @@ fn average_duration(samples: &[Duration]) -> Duration {
     Duration::from_secs_f64(total / samples.len() as f64)
 }
 
-fn print_profile(
-    profile: &ProfileSummary,
-    export: &burn_gaussian_splatting::burn_yono::glb::GlbExportReport,
-    options: &GlbExportOptions,
-) {
+fn print_profile(profile: &ProfileSummary, export: &GlbExportReport, options: &GlbExportOptions) {
     let forward = &profile.timings;
     println!(
         "[PROFILE] warmup_iters={} bench_iters={}",
@@ -338,9 +319,7 @@ fn print_profile(
     );
 }
 
-fn sync_flat_gaussians<B: Backend>(
-    gaussians: &burn_gaussian_splatting::burn_yono::model::gaussian::FlatGaussians<B>,
-) {
+fn sync_flat_gaussians(gaussians: &PipelineGaussians) {
     let [batch, count] = gaussians.opacities.shape().dims::<2>();
     if batch == 0 || count == 0 {
         return;

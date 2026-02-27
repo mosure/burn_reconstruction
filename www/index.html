@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:," />
+    <title>burn_gaussian_splatting web</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b0f14;
+        --panel: #121a24;
+        --line: #2d3d52;
+        --text: #dce8f7;
+        --muted: #9db2c9;
+        --accent: #4fc3f7;
+      }
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background:
+          radial-gradient(circle at 20% 20%, #153352 0%, transparent 35%),
+          radial-gradient(circle at 80% 10%, #164f4a 0%, transparent 30%),
+          var(--bg);
+        color: var(--text);
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      }
+      body {
+        display: grid;
+        place-items: center;
+        padding: 22px;
+      }
+      .card {
+        width: min(820px, 100%);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: linear-gradient(180deg, #121a24 0%, #0f151d 100%);
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
+        padding: 18px;
+      }
+      h1 {
+        margin: 0 0 8px 0;
+        font-size: 22px;
+      }
+      p {
+        margin: 0;
+        color: var(--muted);
+      }
+      .row {
+        margin-top: 14px;
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      input[type="file"],
+      input[type="number"],
+      button,
+      select {
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: #172231;
+        color: var(--text);
+        padding: 8px 10px;
+        font: inherit;
+      }
+      button {
+        cursor: pointer;
+        background: linear-gradient(180deg, #22507a 0%, #1a3e61 100%);
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
+      #status {
+        margin-top: 14px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid #33485f;
+        background: #152130;
+        color: #c5d8ee;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        white-space: pre-wrap;
+      }
+      #download {
+        display: none;
+        margin-top: 12px;
+        color: #8ee7ff;
+      }
+      .hint {
+        font-size: 12px;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1>burn_gaussian_splatting web</h1>
+      <p>Upload multiple PNG/JPG/WebP images of one scene, then export a GLB with <code>KHR_gaussian_splatting</code>.</p>
+
+      <div class="row">
+        <button id="boot" type="button">Initialize WASM</button>
+        <input id="images" type="file" accept=".png,.jpg,.jpeg,.webp" multiple disabled />
+      </div>
+
+      <div class="row">
+        <label for="max-gaussians">max gaussians</label>
+        <input id="max-gaussians" type="number" value="4096" min="64" step="64" disabled />
+        <label for="opacity-threshold">opacity threshold</label>
+        <input id="opacity-threshold" type="number" value="0.02" min="0" max="1" step="0.01" disabled />
+        <button id="run" type="button" disabled>Create GLB</button>
+      </div>
+
+      <div id="status">click "Initialize WASM"</div>
+      <a id="download" download="burn_gaussian_splatting.glb">download glb</a>
+      <p class="hint">Tip: use at least two nearby views of the same static scene.</p>
+    </main>
+
+    <script type="module">
+      const statusEl = document.getElementById("status");
+      const bootBtn = document.getElementById("boot");
+      const runBtn = document.getElementById("run");
+      const imagesInput = document.getElementById("images");
+      const maxGaussiansInput = document.getElementById("max-gaussians");
+      const opacityInput = document.getElementById("opacity-threshold");
+      const downloadLink = document.getElementById("download");
+
+      const moduleUrl = "./out/burn_gaussian_splatting.js";
+      const wasmUrl = "./out/burn_gaussian_splatting_bg.wasm";
+      let wasm = null;
+      let swReadyPromise = null;
+
+      const serviceWorkerCandidates = () => {
+        const pageUrl = new URL(window.location.href);
+        return [
+          new URL("burn_gaussian_splatting_sw.js", pageUrl),
+          new URL("../burn_gaussian_splatting_sw.js", pageUrl),
+        ];
+      };
+
+      const ensureServiceWorker = async () => {
+        if (!("serviceWorker" in navigator)) return false;
+        if (swReadyPromise) return swReadyPromise;
+        swReadyPromise = (async () => {
+          for (const candidate of serviceWorkerCandidates()) {
+            try {
+              await navigator.serviceWorker.register(candidate);
+              await navigator.serviceWorker.ready;
+              return true;
+            } catch (_err) {
+              // Try next candidate so local `/www/*` and deployed root both work.
+            }
+          }
+          console.warn("failed to register burn_gaussian_splatting service worker");
+          return false;
+        })();
+        return swReadyPromise;
+      };
+
+      const setStatus = (msg) => {
+        statusEl.textContent = msg;
+      };
+
+      const setEnabled = (enabled) => {
+        imagesInput.disabled = !enabled;
+        runBtn.disabled = !enabled;
+        maxGaussiansInput.disabled = !enabled;
+        opacityInput.disabled = !enabled;
+      };
+
+      bootBtn.addEventListener("click", async () => {
+        bootBtn.disabled = true;
+        setStatus("registering service worker...");
+        await ensureServiceWorker();
+        setStatus("loading wasm module...");
+
+        try {
+          const mod = await import(moduleUrl);
+          const wasmResponse = await fetch(wasmUrl);
+          if (!wasmResponse.ok) {
+            throw new Error(`failed to fetch wasm: HTTP ${wasmResponse.status}`);
+          }
+          await mod.default(wasmResponse);
+          wasm = mod;
+          const gpu = typeof wasm.webgpu_available === "function" ? wasm.webgpu_available() : false;
+          setStatus(`module ready (webgpu: ${gpu ? "available" : "unavailable"})`);
+          setEnabled(true);
+        } catch (err) {
+          console.error(err);
+          setStatus(`failed to initialize wasm: ${String(err)}`);
+          bootBtn.disabled = false;
+        }
+      });
+
+      runBtn.addEventListener("click", async () => {
+        if (!wasm) {
+          setStatus("initialize wasm first");
+          return;
+        }
+        const files = [...(imagesInput.files || [])];
+        if (files.length < 2) {
+          setStatus("select at least 2 images");
+          return;
+        }
+
+        runBtn.disabled = true;
+        downloadLink.style.display = "none";
+        setStatus(`reading ${files.length} images...`);
+
+        try {
+          const imageBuffers = [];
+          for (const file of files) {
+            imageBuffers.push(new Uint8Array(await file.arrayBuffer()));
+          }
+
+          const opts = new wasm.WasmInferOptions();
+          opts.set_max_gaussians(Number(maxGaussiansInput.value) || 4096);
+          opts.set_opacity_threshold(Number(opacityInput.value) || 0.02);
+
+          setStatus("running inference...");
+          const glb = wasm.infer_glb_from_image_bytes_multi(imageBuffers, opts);
+          const blob = new Blob([glb], { type: "model/gltf-binary" });
+          downloadLink.href = URL.createObjectURL(blob);
+          downloadLink.style.display = "inline";
+          setStatus(`complete (${(glb.byteLength / (1024 * 1024)).toFixed(2)} MiB)`);
+        } catch (err) {
+          console.error(err);
+          setStatus(`inference failed: ${String(err)}`);
+        } finally {
+          runBtn.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

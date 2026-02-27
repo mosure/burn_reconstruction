@@ -4,9 +4,11 @@ use std::path::Path;
 
 use burn::prelude::*;
 use burn::tensor::activation::sigmoid;
-use burn_gaussian_splatting::{
-    burn_yono::full_head_config,
-    correctness::{compute_stats, load_safetensors, read_tensor, tensor_to_vec},
+use burn_gaussian_splatting::correctness::{
+    compute_stats, load_safetensors, read_tensor, tensor_to_vec,
+};
+use burn_yono::{
+    full_head_config,
     import::load_yono_head_from_safetensors,
     model::{
         ops::interpolate_bilinear_align_corners_false, ops::position_getter, ops::se3_inverse_flat,

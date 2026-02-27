@@ -130,18 +130,50 @@ pub fn save_gaussians_to_glb_timed<B: Backend>(
     gaussians: &FlatGaussians<B>,
     options: &GlbExportOptions,
 ) -> Result<GlbExportReport, GlbExportError> {
-    let select_start = Instant::now();
-    let selected = select_export_gaussians(gaussians, options)?;
-    let select_millis = select_start.elapsed().as_secs_f64() * 1000.0;
+    let bytes_report = encode_gaussians_to_glb_bytes_timed(gaussians, options)?;
 
     let write_start = Instant::now();
-    write_khr_gaussian_glb(path, &selected)?;
+    std::fs::write(path, bytes_report.bytes.as_slice())?;
     let write_millis = write_start.elapsed().as_secs_f64() * 1000.0;
 
     Ok(GlbExportReport {
-        selected_gaussians: selected.opacities.len(),
-        select_millis,
+        selected_gaussians: bytes_report.selected_gaussians,
+        select_millis: bytes_report.select_millis,
         write_millis,
+    })
+}
+
+#[cfg(feature = "io")]
+#[derive(Debug, Clone)]
+pub struct GlbEncodeReport {
+    pub selected_gaussians: usize,
+    pub select_millis: f64,
+    pub bytes: Vec<u8>,
+}
+
+#[cfg(feature = "io")]
+pub fn encode_gaussians_to_glb_bytes<B: Backend>(
+    gaussians: &FlatGaussians<B>,
+    options: &GlbExportOptions,
+) -> Result<Vec<u8>, GlbExportError> {
+    Ok(encode_gaussians_to_glb_bytes_timed(gaussians, options)?.bytes)
+}
+
+#[cfg(feature = "io")]
+pub fn encode_gaussians_to_glb_bytes_timed<B: Backend>(
+    gaussians: &FlatGaussians<B>,
+    options: &GlbExportOptions,
+) -> Result<GlbEncodeReport, GlbExportError> {
+    let select_start = Instant::now();
+    let selected = select_export_gaussians(gaussians, options)?;
+    let select_millis = select_start.elapsed().as_secs_f64() * 1000.0;
+    let selected_gaussians = selected.opacities.len();
+    let bytes = encode_export_gaussians_to_glb_bytes(&selected)?;
+
+    Ok(GlbEncodeReport {
+        selected_gaussians,
+        select_millis,
+        bytes,
     })
 }
 
@@ -184,9 +216,9 @@ struct BufferSlice {
 }
 
 #[cfg(feature = "io")]
-fn write_khr_gaussian_glb(path: &Path, gaussians: &ExportGaussians) -> Result<(), GlbExportError> {
-    use std::{fs::File, io::Write};
-
+pub fn encode_export_gaussians_to_glb_bytes(
+    gaussians: &ExportGaussians,
+) -> Result<Vec<u8>, GlbExportError> {
     use serde_json::json;
 
     let count = gaussians.opacities.len();
@@ -304,22 +336,18 @@ fn write_khr_gaussian_glb(path: &Path, gaussians: &ExportGaussians) -> Result<()
     let mut json_bytes = serde_json::to_vec(&gltf)?;
     align4(&mut json_bytes, 0x20);
 
-    let mut file = File::create(path)?;
-
     let total_len = 12 + 8 + json_bytes.len() + 8 + bin.len();
-    file.write_all(&0x4654_6C67u32.to_le_bytes())?;
-    file.write_all(&2u32.to_le_bytes())?;
-    file.write_all(&(total_len as u32).to_le_bytes())?;
-
-    file.write_all(&(json_bytes.len() as u32).to_le_bytes())?;
-    file.write_all(&0x4E4F_534Au32.to_le_bytes())?;
-    file.write_all(json_bytes.as_slice())?;
-
-    file.write_all(&(bin.len() as u32).to_le_bytes())?;
-    file.write_all(&0x004E_4942u32.to_le_bytes())?;
-    file.write_all(bin.as_slice())?;
-
-    Ok(())
+    let mut out = Vec::with_capacity(total_len);
+    out.extend_from_slice(&0x4654_6C67u32.to_le_bytes());
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&(total_len as u32).to_le_bytes());
+    out.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
+    out.extend_from_slice(&0x4E4F_534Au32.to_le_bytes());
+    out.extend_from_slice(json_bytes.as_slice());
+    out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+    out.extend_from_slice(&0x004E_4942u32.to_le_bytes());
+    out.extend_from_slice(bin.as_slice());
+    Ok(out)
 }
 
 #[cfg(feature = "io")]

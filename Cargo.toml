@@ -21,65 +21,29 @@ exclude = [".devcontainer", ".github", "docs", "dist", "build", "assets", "credi
 console_error_panic_hook = "0.1"
 wasm-bindgen = "0.2"
 getrandom = { version = "0.3", features = ["wasm_js"] }
+js-sys = "0.3"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+web-sys = { version = "0.3", features = ["Window", "Navigator"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ureq = "2.12"
 
 
 [features]
-default = ["yono", "backend_ndarray"]
+default = []
 
-yono = ["dep:burn_yono"]
-correctness = ["yono", "burn_yono/correctness"]
-
-backend_cpu = ["burn/cpu", "burn_dino/backend_cpu", "yono", "burn_yono/backend_cpu"]
-backend_cuda = ["burn/cuda", "burn_dino/backend_cuda", "yono", "burn_yono/backend_cuda"]
-backend_ndarray = [
-  "burn/ndarray",
-  "burn_dino/backend_ndarray",
-  "yono",
-  "burn_yono/backend_ndarray",
-]
-wgpu_fusion = ["burn/fusion", "yono", "burn_yono/wgpu_fusion"]
-backend_wgpu = [
-  "burn/wgpu",
-  "burn/webgpu",
-  "burn_dino/backend_wgpu",
-  "yono",
-  "burn_yono/backend_wgpu",
-  "wgpu_fusion",
-]
-
-import = [
-  "yono",
-  "correctness",
-  "burn_yono/import",
-  "clap",
-]
-
-io = [
-  "yono",
-  "burn_yono/io",
-]
-
-cli = [
-  "io",
-  "clap",
-  "import",
-]
-
-
-[dependencies.web-sys]
-version = "0.3.4"
-features = [
-  'Document',
-  'Element',
-  'HtmlElement',
-  'Node',
-  'Window',
-]
+cli = ["dep:clap"]
+correctness = ["burn_yono/correctness"]
+raw_yono = []
 
 
 [dependencies]
-burn_yono = { path = "crates/burn_yono", default-features = false, optional = true }
-burn_dino = { version = "0.7", default-features = false }
+burn_yono = { path = "crates/burn_yono", default-features = false, features = [
+  "backend_wgpu",
+  "wgpu_fusion",
+  "io",
+  "import",
+] }
 clap = { version = "4.5", features = ["derive"], optional = true }
 thiserror = "2.0"
 
@@ -88,6 +52,9 @@ version = "0.19"
 default-features = false
 features = [
   "std",
+  "wgpu",
+  "webgpu",
+  "fusion",
 ]
 
 
@@ -116,11 +83,12 @@ codegen-units = 1
 
 [lib]
 path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
 
 [[bin]]
 name = "import"
 path = "tool/import.rs"
-required-features = ["import"]
+required-features = ["cli"]
 
 [[bin]]
 name = "splat_glb"
@@ -130,14 +98,14 @@ required-features = ["cli"]
 [[bin]]
 name = "eval_multiview_parity"
 path = "tool/eval_multiview_parity.rs"
-required-features = ["import"]
+required-features = ["cli", "correctness"]
 
 [[bin]]
 name = "eval_dino_parity"
 path = "tool/eval_dino_parity.rs"
-required-features = ["import"]
+required-features = ["correctness"]
 
 [[bin]]
 name = "eval_head_debug_parity"
 path = "tool/eval_head_debug_parity.rs"
-required-features = ["import"]
+required-features = ["correctness"]

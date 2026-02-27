@@ -3,9 +3,11 @@
 use std::path::PathBuf;
 
 use burn::prelude::*;
-use burn_gaussian_splatting::{
-    burn_yono::{full_backbone_config, full_head_config},
-    correctness::{compute_stats, load_safetensors, read_tensor, tensor_to_vec},
+use burn_gaussian_splatting::correctness::{
+    compute_stats, load_safetensors, read_tensor, tensor_to_vec,
+};
+use burn_yono::{
+    full_backbone_config, full_head_config,
     import::{load_yono_backbone_from_safetensors, load_yono_head_from_safetensors},
     model::YonoHeadInput,
 };

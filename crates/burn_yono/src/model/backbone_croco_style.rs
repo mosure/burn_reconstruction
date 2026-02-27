@@ -234,7 +234,6 @@ impl<B: Backend> CrocoStyleBackbone<B> {
             encoder: encoder_out,
         }
     }
-
 }
 
 fn normalized_intrinsics_for_dims<B: Backend>(

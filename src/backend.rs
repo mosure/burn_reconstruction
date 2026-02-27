@@ -1,30 +1,15 @@
-#[cfg(feature = "backend_cuda")]
-pub type BackendImpl = burn::backend::Cuda<f32, i32>;
+use burn::prelude::Backend;
 
-#[cfg(all(not(feature = "backend_cuda"), feature = "backend_wgpu"))]
+/// Canonical runtime backend for this crate.
+///
+/// `burn_gaussian_splatting` intentionally standardizes on WGPU + fusion to
+/// keep one validated, production inference path.
 pub type BackendImpl = burn::backend::Wgpu<f32, i32>;
 
-#[cfg(all(
-    not(feature = "backend_cuda"),
-    not(feature = "backend_wgpu"),
-    feature = "backend_cpu"
-))]
-pub type BackendImpl = burn::backend::Cpu<f32, i32>;
+/// Convenience alias for the default backend device.
+pub type BackendDevice = <BackendImpl as Backend>::Device;
 
-#[cfg(all(
-    not(feature = "backend_cuda"),
-    not(feature = "backend_wgpu"),
-    not(feature = "backend_cpu"),
-    feature = "backend_ndarray"
-))]
-pub type BackendImpl = burn::backend::NdArray<f32>;
-
-#[cfg(all(
-    not(feature = "backend_cuda"),
-    not(feature = "backend_wgpu"),
-    not(feature = "backend_cpu"),
-    not(feature = "backend_ndarray")
-))]
-compile_error!(
-    "No backend feature enabled. Enable one of: backend_cuda, backend_wgpu, backend_cpu, backend_ndarray.",
-);
+/// Returns the default WGPU device used by the public pipeline APIs.
+pub fn default_device() -> BackendDevice {
+    BackendDevice::default()
+}
