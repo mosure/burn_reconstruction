@@ -1,4 +1,3 @@
-
 pub fn setup_hooks() {
     #[cfg(debug_assertions)]
     #[cfg(target_arch = "wasm32")]

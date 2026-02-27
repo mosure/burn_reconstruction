@@ -1,31 +1,52 @@
-# burn_gaussian_splatting 🌌
+# burn_gaussian_splatting 🔥🌌
 
 [![test](https://github.com/mosure/burn_gaussian_splatting/workflows/test/badge.svg)](https://github.com/Mosure/burn_gaussian_splatting/actions?query=workflow%3Atest)
 [![GitHub License](https://img.shields.io/github/license/mosure/burn_gaussian_splatting)](https://raw.githubusercontent.com/mosure/burn_gaussian_splatting/main/LICENSE)
-[![GitHub Last Commit](https://img.shields.io/github/last-commit/mosure/burn_gaussian_splatting)](https://github.com/mosure/burn_gaussian_splatting)
-[![GitHub Releases](https://img.shields.io/github/v/release/mosure/burn_gaussian_splatting?include_prereleases&sort=semver)](https://github.com/mosure/burn_gaussian_splatting/releases)
-[![GitHub Issues](https://img.shields.io/github/issues/mosure/burn_gaussian_splatting)](https://github.com/mosure/burn_gaussian_splatting/issues)
-[![Average time to resolve an issue](https://isitmaintained.com/badge/resolution/mosure/burn_gaussian_splatting.svg)](http://isitmaintained.com/project/mosure/burn_gaussian_splatting)
 [![crates.io](https://img.shields.io/crates/v/burn_gaussian_splatting.svg)](https://crates.io/crates/burn_gaussian_splatting)
 
-burn gaussian splatting differentiable render and training pipeline
 
-![Alt text](docs/notferris.png)
+burn feed-forward gaussian splatting
 
-`cargo run -- scenes/person.gcloud`
+
+![Alt text](docs/teaser.png)
+
 
 ## capabilities
 
-- [ ] gaussian splatting person reconstruction
+- [x] multi-view -> 3dgs
 
-## usage
 
-```rust
+## multi-image to GLB
+
+Run the CLI (requires `cli` feature):
+
+```bash
+cargo run --features cli --bin splat_glb -- \
+  --images view0.png view1.png \
+  --output outputs/gaussians.glb \
+  --image-size 224 \
+  --weights-format safetensors \
+  --quality balanced \
+  --profile
 ```
 
-## wasm support
+This exports a GLB with `KHR_gaussian_splatting` extension metadata and gaussian attributes.
+You can override export policy with:
+- `--max-gaussians`
+- `--opacity-threshold`
+- `--sort-mode {opacity|index}`
+- `--weights-format {safetensors|bpk}`
 
-to build wasm run:
-- `cargo build --target wasm32-unknown-unknown --release`
-- `wasm-bindgen --out-dir ./out/ --target web ./target/`
+Quality presets:
+- `fast`: lower gaussian budget, quick outputs.
+- `balanced`: default quality/perf tradeoff.
+- `high`: full gaussian export
 
+
+## license
+licensed under either of
+
+ - Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0)
+ - MIT license (http://opensource.org/licenses/MIT)
+
+at your option.

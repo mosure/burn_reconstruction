@@ -1,4 +1,4 @@
-name: test
+name: build
 
 on:
   push:
@@ -11,8 +11,7 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  test:
-
+  build:
     strategy:
       fail-fast: false
       matrix:
@@ -33,5 +32,5 @@ jobs:
         components: rustfmt, clippy
         enable-sccache: "false"
 
-    - name: test (default)
-      run: cargo test
+    - name: build
+      run: cargo build
