@@ -467,8 +467,6 @@ fn setup_scene(mut commands: Commands) {
         MainOrbitCamera,
         PanOrbitCamera {
             allow_upside_down: true,
-            button_orbit: MouseButton::Right,
-            button_pan: MouseButton::Middle,
             ..PanOrbitCamera::default()
         },
     ));
