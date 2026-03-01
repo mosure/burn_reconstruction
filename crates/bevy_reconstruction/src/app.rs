@@ -3147,6 +3147,92 @@ mod tests {
     }
 
     #[test]
+    fn planar_cloud_conversion_preserves_model_opacity_values() {
+        let d_sh = 1usize;
+        let row_width = 3 + 3 * d_sh + 9 + 3 + 4 + 1;
+        let mut packed = Vec::with_capacity(row_width * 2);
+
+        let mut push_row = |opacity: f32| {
+            packed.extend_from_slice(
+                &[
+                    0.0, 0.0, 0.0, // mean
+                    0.2, 0.3, 0.4, // SH dc
+                    1.0, 0.0, 0.0, // covariance row 0
+                    0.0, 1.0, 0.0, // covariance row 1
+                    0.0, 0.0, 1.0, // covariance row 2
+                    0.1, 0.1, 0.1, // fallback scale
+                    0.0, 0.0, 0.0, 1.0, // fallback rotation xyzw
+                    opacity, // opacity
+                ],
+            );
+        };
+
+        push_row(0.25);
+        push_row(0.75);
+
+        let result = build_planar_cloud_from_buffers(
+            2,
+            d_sh,
+            row_width,
+            packed.as_slice(),
+            &GlbExportOptions {
+                max_gaussians: 2,
+                opacity_threshold: 0.0,
+                sort_mode: GlbSortMode::Index,
+            },
+        )
+        .expect("planar cloud conversion should succeed");
+
+        assert_eq!(result.selected_gaussians, 2);
+        assert!((result.cloud.scale_opacity[0].opacity - 0.25).abs() < 1e-6);
+        assert!((result.cloud.scale_opacity[1].opacity - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn planar_cloud_conversion_clamps_only_out_of_range_opacity() {
+        let d_sh = 1usize;
+        let row_width = 3 + 3 * d_sh + 9 + 3 + 4 + 1;
+        let mut packed = Vec::with_capacity(row_width * 3);
+
+        let mut push_row = |opacity: f32| {
+            packed.extend_from_slice(
+                &[
+                    0.0, 0.0, 0.0, // mean
+                    0.1, 0.1, 0.1, // SH dc
+                    1.0, 0.0, 0.0, // covariance row 0
+                    0.0, 1.0, 0.0, // covariance row 1
+                    0.0, 0.0, 1.0, // covariance row 2
+                    0.1, 0.1, 0.1, // fallback scale
+                    0.0, 0.0, 0.0, 1.0, // fallback rotation xyzw
+                    opacity, // opacity
+                ],
+            );
+        };
+
+        push_row(-0.5);
+        push_row(0.42);
+        push_row(1.8);
+
+        let result = build_planar_cloud_from_buffers(
+            3,
+            d_sh,
+            row_width,
+            packed.as_slice(),
+            &GlbExportOptions {
+                max_gaussians: 3,
+                opacity_threshold: -1.0,
+                sort_mode: GlbSortMode::Index,
+            },
+        )
+        .expect("planar cloud conversion should succeed");
+
+        assert_eq!(result.selected_gaussians, 3);
+        assert!((result.cloud.scale_opacity[0].opacity - 0.0).abs() < 1e-6);
+        assert!((result.cloud.scale_opacity[1].opacity - 0.42).abs() < 1e-6);
+        assert!((result.cloud.scale_opacity[2].opacity - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn add_loaded_image_replaces_existing_name() {
         let mut ui = UiState::default();
         add_loaded_image(&mut ui, "same.png".to_string(), vec![1, 2, 3], None);
