@@ -1,17 +1,17 @@
 "use strict";
 
 /**
- * burn_gaussian_splatting model/web-asset service worker.
+ * burn_reconstruction model/web-asset service worker.
  *
  * Source-of-truth location:
- * - `www/burn_gaussian_splatting_sw.js`
+ * - `www/burn_reconstruction_sw.js`
  *
  * Deployment location:
- * - copied to site root as `burn_gaussian_splatting_sw.js` so root pages are in scope.
+ * - copied to site root as `burn_reconstruction_sw.js` so root pages are in scope.
  */
 
 const CACHE_PREFIX = "burn-gaussian-splatting-web";
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v4";
 const CACHE_NAME = `${CACHE_PREFIX}-${CACHE_VERSION}`;
 const ABERRATION_MODEL_ORIGIN = "https://aberration.technology";
 
@@ -30,7 +30,11 @@ function isCacheableWebAsset(pathname) {
     pathname.endsWith(".js") ||
     pathname.endsWith(".mjs") ||
     pathname.endsWith(".css") ||
-    pathname.endsWith(".html")
+    pathname.endsWith(".html") ||
+    pathname.endsWith(".png") ||
+    pathname.endsWith(".jpg") ||
+    pathname.endsWith(".jpeg") ||
+    pathname.endsWith(".webp")
   );
 }
 
@@ -39,11 +43,10 @@ function shouldCacheRequest(requestUrl) {
   const pathname = url.pathname;
 
   if (url.origin === self.location.origin) {
-    if (isCacheableWebAsset(pathname)) {
-      return true;
-    }
     if (
-      (pathname.includes("/assets/models/") ||
+      (pathname.includes("/assets/model/") ||
+        pathname.includes("/www/assets/model/") ||
+        pathname.includes("/assets/models/") ||
         pathname.includes("/www/assets/models/") ||
         pathname.includes("/assets/")) &&
       isCacheableModelPath(pathname)
@@ -83,6 +86,34 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET") {
     return;
   }
+
+  const url = new URL(request.url);
+  const sameOrigin = url.origin === self.location.origin;
+
+  // Runtime app artifacts are mutable and unversioned in-place (`www/out/*`),
+  // so keep them network-first to avoid stale wasm/js after rebuilds.
+  if (sameOrigin && isCacheableWebAsset(url.pathname)) {
+    event.respondWith(
+      (async () => {
+        const cache = await caches.open(CACHE_NAME);
+        try {
+          const response = await fetch(request);
+          if (response && response.ok) {
+            await cache.put(request, response.clone());
+          }
+          return response;
+        } catch (_err) {
+          const cached = await cache.match(request);
+          if (cached) {
+            return cached;
+          }
+          throw _err;
+        }
+      })(),
+    );
+    return;
+  }
+
   if (!shouldCacheRequest(request.url)) {
     return;
   }

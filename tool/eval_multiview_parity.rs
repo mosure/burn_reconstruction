@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use burn::prelude::*;
-use burn_gaussian_splatting::correctness::{
+use burn_reconstruction::correctness::{
     compute_stats, load_safetensors, read_tensor, tensor_to_vec,
 };
 use burn_yono::{
@@ -13,7 +13,7 @@ use burn_yono::{
 };
 use clap::Parser;
 
-type BackendImpl = burn_gaussian_splatting::backend::BackendImpl;
+type BackendImpl = burn_reconstruction::backend::BackendImpl;
 
 const REFERENCE_PATH: &str = "tmp/cli_test/python_multiview_reference.safetensors";
 const BACKBONE_WEIGHTS: &str = "assets/models/yono_backbone_weights.safetensors";

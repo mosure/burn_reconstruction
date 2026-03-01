@@ -1,0 +1,71 @@
+[package]
+name = "bevy_reconstruction"
+version = "0.1.0"
+edition = "2021"
+description = "bevy UI wrapper for burn_reconstruction multi-view reconstruction"
+license = "MIT"
+repository = "https://github.com/mosure/burn_reconstruction"
+
+[features]
+default = []
+
+[dependencies]
+burn_reconstruction = { path = "../burn_reconstruction", default-features = false }
+bevy = { version = "0.17", default-features = false, features = [
+  "bevy_asset",
+  "bevy_core_pipeline",
+  "bevy_log",
+  "bevy_gizmos",
+  "bevy_pbr",
+  "bevy_render",
+  "bevy_scene",
+  "bevy_sprite",
+  "bevy_sprite_render",
+  "bevy_ui",
+  "bevy_ui_render",
+  "bevy_text",
+  "bevy_winit",
+  "default_font",
+  "jpeg",
+  "multi_threaded",
+  "png",
+  "serialize",
+  "webp",
+  "webgpu",
+  "x11",
+] }
+bevy_infinite_grid = "0.17.0"
+bevy_panorbit_camera = "0.29.0"
+bevy_gaussian_splatting = { version = "6.0.1", default-features = false, features = [
+  "planar",
+  "buffer_storage",
+  "io_flexbuffers",
+  "sh3",
+  "sort_std",
+] }
+crossbeam-channel = "0.5"
+log = "0.4"
+rfd = "0.15"
+
+bevy_app = "0.17"
+bevy_derive = "0.17"
+bevy_ecs = "0.17"
+bevy_tasks = "0.17"
+bevy_window = "0.17"
+bevy_winit = "0.17"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+js-sys = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Document", "DragEvent", "File", "FileList", "DataTransfer", "Window", "Location", "Response", "UrlSearchParams"] }
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "bevy_reconstruction"
+path = "src/main.rs"

@@ -1,4 +1,5 @@
 use burn::{prelude::*, tensor::activation::relu};
+#[cfg(not(target_arch = "wasm32"))]
 use nalgebra::{Matrix3, Vector3};
 
 #[derive(Module, Debug)]
@@ -112,6 +113,28 @@ impl<B: Backend> CameraHead<B> {
         self.convert_pose_to_4x4(out_r, out_t)
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub fn convert_pose_to_4x4(&self, out_r: Tensor<B, 2>, out_t: Tensor<B, 2>) -> Tensor<B, 3> {
+        let [batch, _] = out_t.shape().dims::<2>();
+        let device = out_t.device();
+
+        // Keep wasm inference fully non-blocking: avoid synchronous host readback.
+        // This uses row-normalized rotations as a practical runtime fallback.
+        let rot = out_r.reshape([batch as i32, 3, 3]);
+        let norms = (rot.clone() * rot.clone())
+            .sum_dim(2)
+            .sqrt()
+            .add_scalar(1e-8);
+        let rot = rot / norms;
+        let trans = out_t.reshape([batch as i32, 3, 1]);
+        let top = Tensor::cat(vec![rot, trans], 2);
+        let bottom =
+            Tensor::<B, 1>::from_floats([0.0f32, 0.0, 0.0, 1.0].repeat(batch).as_slice(), &device)
+                .reshape([batch as i32, 1, 4]);
+        Tensor::cat(vec![top, bottom], 1)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn convert_pose_to_4x4(&self, out_r: Tensor<B, 2>, out_t: Tensor<B, 2>) -> Tensor<B, 3> {
         let [batch, _] = out_t.shape().dims::<2>();
         let device = out_t.device();

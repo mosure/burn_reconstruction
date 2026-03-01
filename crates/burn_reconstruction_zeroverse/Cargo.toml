@@ -1,0 +1,20 @@
+[package]
+name = "burn_reconstruction_zeroverse"
+description = "Stub orchestration crate for YoNo fine-tuning with bevy_zeroverse + brush"
+version = "0.1.0"
+edition = "2021"
+authors = ["mosure <mitchell@mosure.me>"]
+license = "MIT"
+repository = "https://github.com/mosure/burn_reconstruction"
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[dependencies]
+burn_yono = { path = "../burn_yono" }
+serde = { version = "1.0", features = ["derive"], optional = true }
+thiserror = "2.0"
+
+[lib]
+path = "src/lib.rs"

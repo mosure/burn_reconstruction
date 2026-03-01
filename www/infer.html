@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>burn_reconstruction wasm inference</title>
+    <style>
+      :root {
+        --bg: #0a0f16;
+        --panel: #121a26;
+        --line: #32465f;
+        --fg: #e6eef9;
+        --muted: #9bb1cc;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      }
+      main {
+        max-width: 760px;
+        margin: 24px auto;
+        padding: 16px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--panel);
+      }
+      h1 {
+        margin: 0 0 12px 0;
+        font-size: 20px;
+      }
+      .row {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+      label {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      input,
+      button {
+        background: #0d1522;
+        color: var(--fg);
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        padding: 7px 9px;
+      }
+      button {
+        cursor: pointer;
+      }
+      #status {
+        margin-top: 12px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        color: var(--muted);
+        white-space: pre-wrap;
+      }
+      #download {
+        display: none;
+        margin-top: 12px;
+        color: #8fd0ff;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Wasm YoNo Inference</h1>
+      <div class="row">
+        <label for="images">Input images (2+):</label>
+        <input id="images" type="file" accept="image/png,image/jpeg,image/webp" multiple />
+      </div>
+      <div class="row">
+        <label for="image-size">Image size</label>
+        <input id="image-size" type="number" min="14" step="14" value="224" />
+        <label for="max-gaussians">Max gaussians</label>
+        <input id="max-gaussians" type="number" min="1" step="1" value="4096" />
+        <label for="opacity-threshold">Opacity threshold</label>
+        <input id="opacity-threshold" type="number" min="0" max="1" step="0.001" value="0.01" />
+      </div>
+      <div class="row">
+        <button id="run" type="button">Run Inference</button>
+      </div>
+      <a id="download" download="gaussians.glb">Download GLB</a>
+      <div id="status">initializing wasm...</div>
+    </main>
+    <script type="module">
+      const SW_VERSION = "v4";
+      const statusEl = document.getElementById("status");
+      const fileInput = document.getElementById("images");
+      const runButton = document.getElementById("run");
+      const downloadLink = document.getElementById("download");
+      const imageSizeInput = document.getElementById("image-size");
+      const maxGaussiansInput = document.getElementById("max-gaussians");
+      const opacityInput = document.getElementById("opacity-threshold");
+
+      let wasm = null;
+      let objectUrl = null;
+      let queuedRunAfterInit = false;
+
+      const setStatus = (text) => {
+        console.info(`[wasm-infer] ${text}`);
+        statusEl.textContent = text;
+      };
+
+      const clearDownload = () => {
+        if (objectUrl) {
+          URL.revokeObjectURL(objectUrl);
+          objectUrl = null;
+        }
+        downloadLink.style.display = "none";
+        downloadLink.removeAttribute("href");
+      };
+
+      const serviceWorkerCandidates = () => {
+        const pageUrl = new URL(window.location.href);
+        return [
+          new URL(`burn_reconstruction_sw.js?sw=${SW_VERSION}`, pageUrl),
+          new URL(`../burn_reconstruction_sw.js?sw=${SW_VERSION}`, pageUrl),
+        ];
+      };
+
+      const ensureModelCacheServiceWorker = async () => {
+        if (!("serviceWorker" in navigator)) return;
+        for (const candidate of serviceWorkerCandidates()) {
+          try {
+            const registration = await navigator.serviceWorker.register(candidate, {
+              updateViaCache: "none",
+            });
+            await registration.update();
+            await navigator.serviceWorker.ready;
+            return;
+          } catch (_err) {
+            // continue
+          }
+        }
+      };
+
+      const ensureWebGpuAdapter = async () => {
+        const gpu = globalThis.navigator?.gpu;
+        if (!gpu) return false;
+        try {
+          return (await gpu.requestAdapter()) != null;
+        } catch (_err) {
+          return false;
+        }
+      };
+
+      const initWasm = async () => {
+        await ensureModelCacheServiceWorker();
+        const hasAdapter = await ensureWebGpuAdapter();
+        if (!hasAdapter) {
+          queuedRunAfterInit = false;
+          setStatus("WebGPU is unavailable in this browser.");
+          return;
+        }
+
+        const mod = await import(`./out/burn_reconstruction.js?v=${SW_VERSION}`);
+        const wasmResp = await fetch(`./out/burn_reconstruction_bg.wasm?v=${SW_VERSION}`);
+        if (!wasmResp.ok) {
+          throw new Error(`failed to fetch wasm: HTTP ${wasmResp.status}`);
+        }
+        await mod.default({ module_or_path: wasmResp });
+        wasm = mod;
+
+        if (!wasm.webgpu_available()) {
+          queuedRunAfterInit = false;
+          setStatus("WebGPU runtime reports unavailable.");
+          return;
+        }
+        setStatus("ready: select 2+ images and click Run Inference");
+        if (queuedRunAfterInit) {
+          queuedRunAfterInit = false;
+          await runInference();
+        }
+      };
+
+      const runInference = async () => {
+        if (!wasm) {
+          queuedRunAfterInit = true;
+          setStatus("wasm is initializing; run queued...");
+          return;
+        }
+        const files = Array.from(fileInput.files ?? []);
+        if (files.length < 2) {
+          setStatus("select at least 2 images");
+          return;
+        }
+
+        clearDownload();
+        runButton.disabled = true;
+        try {
+          setStatus(`reading ${files.length} images...`);
+          const images = [];
+          for (const file of files) {
+            const bytes = new Uint8Array(await file.arrayBuffer());
+            images.push(bytes);
+          }
+
+          const opts = new wasm.WasmInferOptions();
+          opts.set_image_size(Number(imageSizeInput.value || 224));
+          opts.set_max_gaussians(Number(maxGaussiansInput.value || 4096));
+          opts.set_opacity_threshold(Number(opacityInput.value || 0.01));
+
+          setStatus("running model inference...");
+          const inferFn =
+            wasm.infer_glb_from_image_bytes_multi_async ??
+            wasm.infer_glb_from_image_bytes_multi;
+          const glbBytes = await inferFn(images, opts);
+          const blob = new Blob([glbBytes], { type: "model/gltf-binary" });
+          objectUrl = URL.createObjectURL(blob);
+          downloadLink.href = objectUrl;
+          downloadLink.style.display = "inline-block";
+          setStatus(`done: generated ${glbBytes.length} bytes`);
+        } catch (err) {
+          console.error(err);
+          setStatus(`error: ${String(err)}`);
+        } finally {
+          runButton.disabled = false;
+        }
+      };
+
+      runButton.addEventListener("click", () => {
+        void runInference();
+      });
+
+      window.addEventListener("beforeunload", () => {
+        clearDownload();
+      });
+
+      void initWasm().catch((err) => {
+        console.error(err);
+        setStatus(`failed: ${String(err)}`);
+      });
+    </script>
+  </body>
+</html>

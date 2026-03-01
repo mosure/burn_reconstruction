@@ -1,0 +1,106 @@
+[package]
+name = "burn_reconstruction"
+description = "burn feed-forward gaussian splatting"
+version = "0.1.0"
+edition = "2021"
+authors = ["mosure <mitchell@mosure.me>"]
+license = "MIT"
+keywords = ["burn", "gaussian-splatting"]
+categories = ["computer-vision", "graphics", "rendering", "rendering::data-formats"]
+homepage = "https://github.com/mosure/burn_reconstruction"
+repository = "https://github.com/mosure/burn_reconstruction"
+readme = "../../README.md"
+exclude = [".devcontainer", ".github", "docs", "dist", "build", "assets", "credits"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+getrandom = { version = "0.3", features = ["wasm_js"] }
+js-sys = "0.3"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+web-sys = { version = "0.3", features = ["Window", "Navigator", "Response"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ureq = "2.12"
+
+[features]
+default = ["cli"]
+
+cli = ["dep:clap"]
+correctness = ["burn_yono/correctness"]
+raw_yono = []
+
+[dependencies]
+burn_yono = { path = "../burn_yono", default-features = false, features = [
+  "backend_ndarray",
+  "backend_wgpu",
+  "wgpu_fusion",
+  "io",
+  "import",
+] }
+clap = { version = "4.5", features = ["derive"], optional = true }
+thiserror = "2.0"
+
+[dependencies.burn]
+version = "0.19"
+default-features = false
+features = [
+  "std",
+  "ndarray",
+  "wgpu",
+  "webgpu",
+  "fusion",
+]
+
+[dev-dependencies]
+safetensors = "0.7"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "import"
+path = "../../tool/import.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "burn_reconstruction"
+path = "../../tool/splat_glb.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "eval_multiview_parity"
+path = "../../tool/eval_multiview_parity.rs"
+required-features = ["cli", "correctness"]
+
+[[bin]]
+name = "eval_dino_parity"
+path = "../../tool/eval_dino_parity.rs"
+required-features = ["correctness"]
+
+[[bin]]
+name = "eval_head_debug_parity"
+path = "../../tool/eval_head_debug_parity.rs"
+required-features = ["correctness"]
+
+[[bin]]
+name = "eval_precision_parity"
+path = "../../tool/eval_precision_parity.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "bench_pipeline"
+path = "../../tool/bench_pipeline.rs"
+required-features = ["cli"]
+
+[[test]]
+name = "parity"
+path = "../../tests/parity.rs"
+required-features = ["correctness"]

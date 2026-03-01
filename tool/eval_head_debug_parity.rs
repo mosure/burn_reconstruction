@@ -4,7 +4,7 @@ use std::path::Path;
 
 use burn::prelude::*;
 use burn::tensor::activation::sigmoid;
-use burn_gaussian_splatting::correctness::{
+use burn_reconstruction::correctness::{
     compute_stats, load_safetensors, read_tensor, tensor_to_vec,
 };
 use burn_yono::{
@@ -15,7 +15,7 @@ use burn_yono::{
     },
 };
 
-type BackendImpl = burn_gaussian_splatting::backend::BackendImpl;
+type BackendImpl = burn_reconstruction::backend::BackendImpl;
 
 const DEBUG_REFERENCE_PATH: &str = "tmp/cli_test/python_head_only_debug_fp32.safetensors";
 const HEAD_WEIGHTS: &str = "assets/models/yono_head_weights.safetensors";

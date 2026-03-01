@@ -32,29 +32,30 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - name: install wasm-bindgen-cli
-        run: cargo install wasm-bindgen-cli --version 0.2.108 --locked
+        run: cargo install wasm-bindgen-cli --version 0.2.113 --locked
 
       - name: build web wasm
         run: ./scripts/build_web.sh
-
-      - name: bundle optional model assets
-        run: ./scripts/bundle_web_assets.sh
 
       - name: stage site
         run: |
           rm -rf site
           mkdir -p site/out
           cp www/index.html site/index.html
+          cp www/infer.html site/infer.html
           # deploy service worker to root scope for root pages
-          cp www/burn_gaussian_splatting_sw.js site/burn_gaussian_splatting_sw.js
+          cp www/burn_reconstruction_sw.js site/burn_reconstruction_sw.js
           cp -r www/out/. site/out/
-          if [ -d "www/assets" ]; then
-            mkdir -p site/assets
-            cp -r www/assets/. site/assets/
+          # Do not bundle model weights in CI deploy. These are hosted separately (S3/CloudFront).
+          # Ship only static image fixtures for concise startup-url args.
+          if [ -d "assets/images" ]; then
+            mkdir -p site/assets/images
+            cp -r assets/images/. site/assets/images/
           fi
           test -f site/index.html
-          test -f site/out/burn_gaussian_splatting_bg.wasm
-          test -f site/burn_gaussian_splatting_sw.js
+          test -f site/infer.html
+          test -f site/out/bevy_reconstruction_bg.wasm
+          test -f site/burn_reconstruction_sw.js
 
       - name: configure pages
         uses: actions/configure-pages@v5

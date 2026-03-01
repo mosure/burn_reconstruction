@@ -4,233 +4,193 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" href="data:," />
-    <title>burn_gaussian_splatting web</title>
+    <title>bevy_reconstruction</title>
     <style>
       :root {
-        color-scheme: dark;
-        --bg: #0b0f14;
-        --panel: #121a24;
-        --line: #2d3d52;
-        --text: #dce8f7;
-        --muted: #9db2c9;
-        --accent: #4fc3f7;
+        --bg: #0a0f16;
+        --fg: #e6eef9;
+        --muted: #9bb1cc;
+        --line: #32465f;
       }
       html,
       body {
         margin: 0;
-        min-height: 100%;
+        width: 100%;
+        height: 100%;
         background:
-          radial-gradient(circle at 20% 20%, #153352 0%, transparent 35%),
-          radial-gradient(circle at 80% 10%, #164f4a 0%, transparent 30%),
+          radial-gradient(circle at 20% 15%, #16304b 0%, transparent 30%),
+          radial-gradient(circle at 85% 10%, #1f4343 0%, transparent 32%),
           var(--bg);
-        color: var(--text);
+        color: var(--fg);
         font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
       }
-      body {
-        display: grid;
-        place-items: center;
-        padding: 22px;
-      }
-      .card {
-        width: min(820px, 100%);
+      .shell {
+        position: fixed;
+        top: 12px;
+        right: 12px;
+        z-index: 2000;
         border: 1px solid var(--line);
-        border-radius: 14px;
-        background: linear-gradient(180deg, #121a24 0%, #0f151d 100%);
-        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
-        padding: 18px;
+        border-radius: 10px;
+        padding: 10px 12px;
+        background: rgba(12, 20, 30, 0.78);
+        backdrop-filter: blur(4px);
+        max-width: min(420px, calc(100vw - 24px));
+        transition:
+          opacity 220ms ease,
+          transform 220ms ease;
       }
-      h1 {
-        margin: 0 0 8px 0;
-        font-size: 22px;
+      .shell.hidden {
+        opacity: 0;
+        transform: translateY(-8px);
+        pointer-events: none;
       }
-      p {
+      .shell.error {
+        border-color: #8f3c3c;
+        background: rgba(38, 15, 18, 0.86);
+      }
+      .shell p {
         margin: 0;
         color: var(--muted);
+        font-size: 13px;
       }
-      .row {
-        margin-top: 14px;
-        display: flex;
-        gap: 10px;
-        flex-wrap: wrap;
-        align-items: center;
-      }
-      input[type="file"],
-      input[type="number"],
-      button,
-      select {
-        border: 1px solid var(--line);
-        border-radius: 9px;
-        background: #172231;
-        color: var(--text);
-        padding: 8px 10px;
-        font: inherit;
-      }
-      button {
-        cursor: pointer;
-        background: linear-gradient(180deg, #22507a 0%, #1a3e61 100%);
-      }
-      button:disabled {
-        opacity: 0.55;
-        cursor: default;
+      .shell .hint {
+        margin-top: 6px;
+        color: #7f95b1;
+        font-size: 11px;
       }
       #status {
-        margin-top: 14px;
-        padding: 10px 12px;
-        border-radius: 8px;
-        border: 1px solid #33485f;
-        background: #152130;
-        color: #c5d8ee;
+        margin-top: 6px;
+        color: var(--fg);
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        white-space: pre-wrap;
-      }
-      #download {
-        display: none;
-        margin-top: 12px;
-        color: #8ee7ff;
-      }
-      .hint {
         font-size: 12px;
-        color: var(--muted);
       }
     </style>
   </head>
   <body>
-    <main class="card">
-      <h1>burn_gaussian_splatting web</h1>
-      <p>Upload multiple PNG/JPG/WebP images of one scene, then export a GLB with <code>KHR_gaussian_splatting</code>.</p>
-
-      <div class="row">
-        <button id="boot" type="button">Initialize WASM</button>
-        <input id="images" type="file" accept=".png,.jpg,.jpeg,.webp" multiple disabled />
-      </div>
-
-      <div class="row">
-        <label for="max-gaussians">max gaussians</label>
-        <input id="max-gaussians" type="number" value="4096" min="64" step="64" disabled />
-        <label for="opacity-threshold">opacity threshold</label>
-        <input id="opacity-threshold" type="number" value="0.02" min="0" max="1" step="0.01" disabled />
-        <button id="run" type="button" disabled>Create GLB</button>
-      </div>
-
-      <div id="status">click "Initialize WASM"</div>
-      <a id="download" download="burn_gaussian_splatting.glb">download glb</a>
-      <p class="hint">Tip: use at least two nearby views of the same static scene.</p>
-    </main>
+    <div class="shell" id="bootstrap-shell">
+      <p>bevy_reconstruction wasm</p>
+      <p class="hint">try <code>?image=re10k/0.png&amp;image=re10k/1.png&amp;image=re10k/2.png</code></p>
+      <div id="status">loading...</div>
+    </div>
 
     <script type="module">
-      const statusEl = document.getElementById("status");
-      const bootBtn = document.getElementById("boot");
-      const runBtn = document.getElementById("run");
-      const imagesInput = document.getElementById("images");
-      const maxGaussiansInput = document.getElementById("max-gaussians");
-      const opacityInput = document.getElementById("opacity-threshold");
-      const downloadLink = document.getElementById("download");
+      const SW_VERSION = "v4";
+      const shell = document.getElementById("bootstrap-shell");
+      const status = document.getElementById("status");
+      let hideShellTimer = null;
 
-      const moduleUrl = "./out/burn_gaussian_splatting.js";
-      const wasmUrl = "./out/burn_gaussian_splatting_bg.wasm";
-      let wasm = null;
-      let swReadyPromise = null;
+      const showShell = (error = false) => {
+        shell.classList.remove("hidden");
+        shell.classList.toggle("error", error);
+      };
+
+      const hideShellSoon = () => {
+        if (hideShellTimer !== null) {
+          clearTimeout(hideShellTimer);
+        }
+        hideShellTimer = setTimeout(() => {
+          shell.classList.add("hidden");
+          shell.classList.remove("error");
+        }, 1400);
+      };
+
+      const setStatus = (msg) => {
+        console.info(`[bevy_reconstruction] ${msg}`);
+        status.textContent = msg;
+      };
+
+      const failStatus = (msg, err) => {
+        if (err) {
+          console.error(err);
+        }
+        showShell(true);
+        setStatus(msg);
+      };
+
+      window.addEventListener("error", (event) => {
+        failStatus(`runtime error: ${event.message}`, event.error ?? event.message);
+      });
+      window.addEventListener("unhandledrejection", (event) => {
+        failStatus(`runtime rejection: ${String(event.reason)}`, event.reason);
+      });
 
       const serviceWorkerCandidates = () => {
         const pageUrl = new URL(window.location.href);
         return [
-          new URL("burn_gaussian_splatting_sw.js", pageUrl),
-          new URL("../burn_gaussian_splatting_sw.js", pageUrl),
+          new URL(`burn_reconstruction_sw.js?sw=${SW_VERSION}`, pageUrl),
+          new URL(`../burn_reconstruction_sw.js?sw=${SW_VERSION}`, pageUrl),
         ];
       };
 
-      const ensureServiceWorker = async () => {
-        if (!("serviceWorker" in navigator)) return false;
-        if (swReadyPromise) return swReadyPromise;
-        swReadyPromise = (async () => {
-          for (const candidate of serviceWorkerCandidates()) {
-            try {
-              await navigator.serviceWorker.register(candidate);
-              await navigator.serviceWorker.ready;
-              return true;
-            } catch (_err) {
-              // Try next candidate so local `/www/*` and deployed root both work.
-            }
-          }
-          console.warn("failed to register burn_gaussian_splatting service worker");
+      const ensureModelCacheServiceWorker = async () => {
+        if (!("serviceWorker" in navigator)) {
           return false;
-        })();
-        return swReadyPromise;
-      };
-
-      const setStatus = (msg) => {
-        statusEl.textContent = msg;
-      };
-
-      const setEnabled = (enabled) => {
-        imagesInput.disabled = !enabled;
-        runBtn.disabled = !enabled;
-        maxGaussiansInput.disabled = !enabled;
-        opacityInput.disabled = !enabled;
-      };
-
-      bootBtn.addEventListener("click", async () => {
-        bootBtn.disabled = true;
-        setStatus("registering service worker...");
-        await ensureServiceWorker();
-        setStatus("loading wasm module...");
-
-        try {
-          const mod = await import(moduleUrl);
-          const wasmResponse = await fetch(wasmUrl);
-          if (!wasmResponse.ok) {
-            throw new Error(`failed to fetch wasm: HTTP ${wasmResponse.status}`);
+        }
+        for (const candidate of serviceWorkerCandidates()) {
+          try {
+            const registration = await navigator.serviceWorker.register(candidate, {
+              updateViaCache: "none",
+            });
+            await registration.update();
+            await navigator.serviceWorker.ready;
+            return true;
+          } catch (_err) {
+            // Try next candidate so both `/www/*` local hosting and deployed root paths work.
           }
-          await mod.default(wasmResponse);
-          wasm = mod;
-          const gpu = typeof wasm.webgpu_available === "function" ? wasm.webgpu_available() : false;
-          setStatus(`module ready (webgpu: ${gpu ? "available" : "unavailable"})`);
-          setEnabled(true);
-        } catch (err) {
-          console.error(err);
-          setStatus(`failed to initialize wasm: ${String(err)}`);
-          bootBtn.disabled = false;
         }
-      });
+        return false;
+      };
 
-      runBtn.addEventListener("click", async () => {
-        if (!wasm) {
-          setStatus("initialize wasm first");
-          return;
+      const ensureWebGpuAdapter = async () => {
+        const gpu = globalThis.navigator?.gpu;
+        if (!gpu) {
+          return {
+            ok: false,
+            reason:
+              "WebGPU is unavailable in this browser. Use a WebGPU-enabled browser (Chrome/Edge) and secure context (https or localhost).",
+          };
         }
-        const files = [...(imagesInput.files || [])];
-        if (files.length < 2) {
-          setStatus("select at least 2 images");
-          return;
-        }
-
-        runBtn.disabled = true;
-        downloadLink.style.display = "none";
-        setStatus(`reading ${files.length} images...`);
-
         try {
-          const imageBuffers = [];
-          for (const file of files) {
-            imageBuffers.push(new Uint8Array(await file.arrayBuffer()));
+          const adapter =
+            (await gpu.requestAdapter({ powerPreference: "high-performance" })) ??
+            (await gpu.requestAdapter());
+          if (!adapter) {
+            return {
+              ok: false,
+              reason:
+                "No WebGPU adapter found. Check browser GPU settings/flags and graphics drivers.",
+            };
           }
-
-          const opts = new wasm.WasmInferOptions();
-          opts.set_max_gaussians(Number(maxGaussiansInput.value) || 4096);
-          opts.set_opacity_threshold(Number(opacityInput.value) || 0.02);
-
-          setStatus("running inference...");
-          const glb = wasm.infer_glb_from_image_bytes_multi(imageBuffers, opts);
-          const blob = new Blob([glb], { type: "model/gltf-binary" });
-          downloadLink.href = URL.createObjectURL(blob);
-          downloadLink.style.display = "inline";
-          setStatus(`complete (${(glb.byteLength / (1024 * 1024)).toFixed(2)} MiB)`);
+          return { ok: true };
         } catch (err) {
-          console.error(err);
-          setStatus(`inference failed: ${String(err)}`);
-        } finally {
-          runBtn.disabled = false;
+          return {
+            ok: false,
+            reason: `WebGPU adapter request failed: ${String(err)}`,
+          };
         }
-      });
+      };
+
+      try {
+        setStatus("initializing model cache...");
+        await ensureModelCacheServiceWorker();
+        setStatus("checking WebGPU...");
+        const webGpu = await ensureWebGpuAdapter();
+        if (!webGpu.ok) {
+          failStatus(webGpu.reason);
+          throw new Error(webGpu.reason);
+        }
+        setStatus("initializing wasm...");
+        const mod = await import(`./out/bevy_reconstruction.js?v=${SW_VERSION}`);
+        const wasm = await fetch(`./out/bevy_reconstruction_bg.wasm?v=${SW_VERSION}`);
+        if (!wasm.ok) {
+          throw new Error(`failed to fetch wasm: HTTP ${wasm.status}`);
+        }
+        await mod.default({ module_or_path: wasm });
+        setStatus("running bevy app");
+        hideShellSoon();
+      } catch (err) {
+        failStatus(`failed: ${String(err)}`, err);
+      }
     </script>
   </body>
 </html>

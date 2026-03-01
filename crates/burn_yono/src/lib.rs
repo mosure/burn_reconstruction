@@ -6,6 +6,8 @@ pub mod model;
 
 #[cfg(feature = "import")]
 pub mod import;
+#[cfg(feature = "import")]
+pub mod parts;
 
 pub mod glb;
 pub mod inference;
@@ -15,6 +17,7 @@ pub use glb::{GlbExportError, GlbExportOptions, GlbSortMode};
 #[cfg(feature = "io")]
 pub use glb::{save_gaussians_to_glb, save_gaussians_to_glb_timed, GlbExportReport};
 pub use inference::{
-    full_backbone_config, full_head_config, normalized_intrinsics, ForwardTimings, YonoLoadReport,
-    YonoModelBundle, YonoPipelineError, YonoWeightFormat, YonoWeights,
+    burnpack_path_for_precision, burnpack_precision_candidates, full_backbone_config,
+    full_head_config, normalized_intrinsics, ForwardTimings, YonoLoadReport, YonoModelBundle,
+    YonoPipelineError, YonoWeightFormat, YonoWeightPrecision, YonoWeights,
 };

@@ -1,12 +1,12 @@
-# contributing to burn_gaussian_splatting
+# contributing to burn_reconstruction
 
 ![alt text](docs/notferris2.webp)
 
-thank you for your interest in contributing to `burn_gaussian_splatting`! contributions of all forms are welcome and appreciated. this includes code contributions, bug reports, documentation, or any other form of support.
+thank you for your interest in contributing to `burn_reconstruction`! contributions of all forms are welcome and appreciated. this includes code contributions, bug reports, documentation, or any other form of support.
 
 ## getting started
 
-as `burn_gaussian_splatting` is a smaller project, the contribution process is more informal. feel free to contribute in a way that aligns with your interests and expertise. if you have any questions or need guidance, don't hesitate to reach out.
+as `burn_reconstruction` is a smaller project, the contribution process is more informal. feel free to contribute in a way that aligns with your interests and expertise. if you have any questions or need guidance, don't hesitate to reach out.
 
 ## ways to contribute
 

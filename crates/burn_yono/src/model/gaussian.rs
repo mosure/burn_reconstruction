@@ -358,7 +358,7 @@ mod tests {
         ]);
 
         let extrinsics = Tensor::<TestBackend, 1>::from_floats(
-            vec![
+            [
                 1.0f32, 0.0, 0.0, 0.0, //
                 0.0, 1.0, 0.0, 0.0, //
                 0.0, 0.0, 1.0, 0.0, //
@@ -396,7 +396,7 @@ mod tests {
             raw.clone().squeeze_dim(4),
             Some(
                 Tensor::<TestBackend, 1>::from_floats(
-                    vec![
+                    [
                         1.0f32, 0.0, 0.0, 0.0, //
                         0.0, 1.0, 0.0, 0.0, //
                         0.0, 0.0, 1.0, 0.0, //
@@ -425,7 +425,7 @@ mod tests {
                 raw.clone(),
                 Some(
                     Tensor::<TestBackend, 1>::from_floats(
-                        vec![
+                        [
                             1.0f32, 0.0, 0.0, 0.0, //
                             0.0, 1.0, 0.0, 0.0, //
                             0.0, 0.0, 1.0, 0.0, //

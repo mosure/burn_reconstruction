@@ -21,3 +21,8 @@ tests/web_playwright/node_modules/
 
 tmp/
 web_playwright/
+
+assets/models/
+assets/fixtures/
+tests/fixtures/
+

@@ -3,10 +3,11 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use burn_gaussian_splatting::{
+use burn_reconstruction::{
     backend::default_device, ComponentLoadReport, ForwardTimings, GlbExportOptions,
     GlbExportReport, GlbSortMode, ImageToGaussianPipeline, PipelineConfig, PipelineGaussians,
-    PipelineModel, PipelineQuality, PipelineWeights, YonoWeightFormat, YonoWeights,
+    PipelineModel, PipelineQuality, PipelineWeights, YonoWeightFormat, YonoWeightPrecision,
+    YonoWeights,
 };
 use clap::{Parser, ValueEnum};
 
@@ -29,14 +30,26 @@ enum WeightFormatArg {
     Bpk,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum WeightPrecisionArg {
+    F16,
+    F32,
+}
+
 #[derive(Clone, Debug, Parser)]
 #[command(
     about = "Run multi-image inference and export KHR_gaussian_splatting GLB",
-    version,
+    version = burn_reconstruction::build_info::PKG_VERSION,
+    long_version = burn_reconstruction::build_info::LONG_VERSION,
+    after_help = concat!(
+        "build: ",
+        env!("BURN_RECONSTRUCTION_BUILD_LABEL"),
+        "\nuse --rev to print only the short git revision."
+    ),
     long_about = None
 )]
 struct CliConfig {
-    #[arg(long, required = true, num_args = 2..)]
+    #[arg(long, required_unless_present = "rev", num_args = 2..)]
     images: Vec<PathBuf>,
 
     #[arg(long, default_value = "outputs/gaussians.glb")]
@@ -69,18 +82,32 @@ struct CliConfig {
     #[arg(long, default_value_t = false)]
     single_sync_profile: bool,
 
-    #[arg(long, value_enum, default_value_t = WeightFormatArg::Safetensors)]
+    #[arg(long, value_enum, default_value_t = WeightFormatArg::Bpk)]
     weights_format: WeightFormatArg,
+
+    #[arg(long, value_enum, default_value_t = WeightPrecisionArg::F16)]
+    weights_precision: WeightPrecisionArg,
 
     #[arg(long)]
     backbone_weights: Option<PathBuf>,
 
     #[arg(long)]
     head_weights: Option<PathBuf>,
+
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Print 7-char git revision and exit"
+    )]
+    rev: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = CliConfig::parse();
+    if args.rev {
+        println!("{}", burn_reconstruction::git_revision_short());
+        return Ok(());
+    }
     let device = default_device();
 
     if args.image_size % 14 != 0 {
@@ -109,17 +136,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         WeightFormatArg::Safetensors => YonoWeightFormat::Safetensors,
         WeightFormatArg::Bpk => YonoWeightFormat::Burnpack,
     };
+    let weight_precision = match args.weights_precision {
+        WeightPrecisionArg::F16 => YonoWeightPrecision::F16,
+        WeightPrecisionArg::F32 => YonoWeightPrecision::F32,
+    };
 
     let weights = match (&args.backbone_weights, &args.head_weights) {
         (Some(backbone), Some(head)) => PipelineWeights::from_yono(
-            YonoWeights::new(backbone.clone(), head.clone()).with_format(weight_format),
+            YonoWeights::new(backbone.clone(), head.clone())
+                .with_format(weight_format)
+                .with_precision(weight_precision),
         ),
         (None, None) => {
-            let weights = PipelineWeights::resolve_or_bootstrap_yono(weight_format)?;
+            let weights = PipelineWeights::resolve_or_bootstrap_yono_with_precision(
+                weight_format,
+                weight_precision,
+            )?;
             println!(
-                "[BOOTSTRAP] using cached YoNo weights:\n  backbone={}\n  head={}",
+                "[BOOTSTRAP] using cached YoNo weights:\n  backbone={}\n  head={}\n  precision={:?}",
                 weights.yono.backbone.display(),
-                weights.yono.head.display()
+                weights.yono.head.display(),
+                weights.yono.precision
             );
             weights
         }

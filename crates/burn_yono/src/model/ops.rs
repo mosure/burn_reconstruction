@@ -156,7 +156,7 @@ mod tests {
             .to_vec::<f32>()
             .expect("output must be readable");
 
-        let expected = vec![
+        let expected = [
             1.0, 1.25, 1.75, 2.0, //
             1.5, 1.75, 2.25, 2.5, //
             2.5, 2.75, 3.25, 3.5, //
