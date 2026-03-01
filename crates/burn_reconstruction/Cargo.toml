@@ -34,7 +34,7 @@ correctness = ["burn_yono/correctness"]
 raw_yono = []
 
 [dependencies]
-burn_yono = { path = "../burn_yono", default-features = false, features = [
+burn_yono = { version = "0.1.0", path = "../burn_yono", default-features = false, features = [
   "backend_ndarray",
   "backend_wgpu",
   "wgpu_fusion",
@@ -66,41 +66,6 @@ path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]
 
 [[bin]]
-name = "import"
-path = "../../tool/import.rs"
-required-features = ["cli"]
-
-[[bin]]
 name = "burn_reconstruction"
-path = "../../tool/splat_glb.rs"
+path = "src/bin/burn_reconstruction.rs"
 required-features = ["cli"]
-
-[[bin]]
-name = "eval_multiview_parity"
-path = "../../tool/eval_multiview_parity.rs"
-required-features = ["cli", "correctness"]
-
-[[bin]]
-name = "eval_dino_parity"
-path = "../../tool/eval_dino_parity.rs"
-required-features = ["correctness"]
-
-[[bin]]
-name = "eval_head_debug_parity"
-path = "../../tool/eval_head_debug_parity.rs"
-required-features = ["correctness"]
-
-[[bin]]
-name = "eval_precision_parity"
-path = "../../tool/eval_precision_parity.rs"
-required-features = ["cli"]
-
-[[bin]]
-name = "bench_pipeline"
-path = "../../tool/bench_pipeline.rs"
-required-features = ["cli"]
-
-[[test]]
-name = "parity"
-path = "../../tests/parity.rs"
-required-features = ["correctness"]

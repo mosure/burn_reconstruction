@@ -12,7 +12,7 @@ default = []
 serde = ["dep:serde"]
 
 [dependencies]
-burn_yono = { path = "../burn_yono" }
+burn_yono = { version = "0.1.0", path = "../burn_yono" }
 serde = { version = "1.0", features = ["derive"], optional = true }
 thiserror = "2.0"
 

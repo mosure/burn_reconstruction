@@ -10,7 +10,7 @@ repository = "https://github.com/mosure/burn_reconstruction"
 default = []
 
 [dependencies]
-burn_reconstruction = { path = "../burn_reconstruction", default-features = false }
+burn_reconstruction = { version = "0.1.0", path = "../burn_reconstruction", default-features = false }
 bevy = { version = "0.17", default-features = false, features = [
   "bevy_asset",
   "bevy_core_pipeline",
