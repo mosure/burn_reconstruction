@@ -775,9 +775,7 @@ fn native_load_pipeline(
         YonoWeightFormat::Burnpack,
         YonoWeightPrecision::F16,
         move |status| {
-            let _ = progress_tx.send(NativeWorkerEvent::Status(format!(
-                "loading model weights: {status}"
-            )));
+            let _ = progress_tx.send(NativeWorkerEvent::Status(status));
         },
     )
     .map_err(|err| format!("failed to resolve model weights: {err}"))?;
@@ -790,9 +788,7 @@ fn native_load_pipeline(
     let progress_tx = event_tx.clone();
     let (pipeline, _load_report) =
         ImageToGaussianPipeline::load_default_with_progress(cfg, weights, move |status| {
-            let _ = progress_tx.send(NativeWorkerEvent::Status(format!(
-                "loading model weights: {status}"
-            )));
+            let _ = progress_tx.send(NativeWorkerEvent::Status(status));
         })
         .map_err(|err| format!("failed to initialize inference pipeline: {err}"))?;
     send_worker_status(event_tx, "yono modules initialized; preparing inference...");
@@ -2057,10 +2053,7 @@ fn set_wasm_progress(progress: &WasmProgress, message: impl Into<String>) {
 
 #[cfg(target_arch = "wasm32")]
 fn set_wasm_model_progress(progress: &WasmProgress, message: impl Into<String>) {
-    set_wasm_progress(
-        progress,
-        format!("loading model weights: {}", message.into()),
-    );
+    set_wasm_progress(progress, message.into());
 }
 
 fn decode_thumbnail_handle(
@@ -3315,7 +3308,7 @@ mod tests {
         let (_, tone_preparing) = status_badge_from_ui(&ui);
         assert_eq!(tone_preparing, StatusBadgeTone::Busy);
 
-        ui.status = "loading model weights: cached backbone part 1/16".to_string();
+        ui.status = "cached backbone part 1/16".to_string();
         let (_, tone_cached_parts) = status_badge_from_ui(&ui);
         assert_eq!(tone_cached_parts, StatusBadgeTone::Busy);
     }

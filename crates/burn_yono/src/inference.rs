@@ -218,14 +218,14 @@ impl<B: Backend> YonoModelBundle<B> {
                         device,
                         full_backbone_config(),
                         backbone_candidates.as_slice(),
-                        |message| progress(message),
+                        &progress,
                     )?;
                 let (head, head_apply) =
                     load_yono_head_from_burnpack_candidates_with_progress::<B, _>(
                         device,
                         full_head_config(),
                         head_candidates.as_slice(),
-                        |message| progress(message),
+                        &progress,
                     )?;
                 (backbone, backbone_apply, head, head_apply)
             }
@@ -282,13 +282,13 @@ impl<B: Backend> YonoModelBundle<B> {
                 device,
                 full_backbone_config(),
                 backbone_parts,
-                |message| progress(message),
+                &progress,
             )?;
         let (head, head_apply) = load_yono_head_from_burnpack_part_bytes_with_progress::<B, _>(
             device,
             full_head_config(),
             head_parts,
-            |message| progress(message),
+            &progress,
         )?;
 
         let report = YonoLoadReport {
