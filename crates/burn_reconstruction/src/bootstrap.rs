@@ -386,24 +386,13 @@ mod native {
         progress: Option<&BootstrapProgressCallback>,
         component: &str,
         path: &Path,
-        url: &str,
+        _url: &str,
     ) {
         if path.exists() {
-            emit_progress(
-                progress,
-                format!(
-                    "using cached {component}: {}",
-                    path.file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("weights")
-                ),
-            );
+            emit_progress(progress, format!("using cached {component}"));
             return;
         }
-        emit_progress(
-            progress,
-            format!("downloading {component}: {}", url_leaf_name(url)),
-        );
+        emit_progress(progress, format!("downloading {component}"));
     }
 
     fn precision_label(precision: YonoWeightPrecision) -> &'static str {
@@ -411,10 +400,6 @@ mod native {
             YonoWeightPrecision::F16 => "f16",
             YonoWeightPrecision::F32 => "f32",
         }
-    }
-
-    fn url_leaf_name(url: &str) -> &str {
-        url.rsplit('/').next().unwrap_or(url)
     }
 
     fn ensure_model_pair_cached(
@@ -502,24 +487,30 @@ mod native {
         if manifest_is_complete(manifest_path.as_path()).unwrap_or(false) {
             emit_progress(
                 progress.as_ref(),
-                format!(
-                    "using cached {component} parts manifest: {}",
-                    manifest_path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("manifest")
-                ),
+                format!("using cached {component} parts manifest"),
             );
+            if let Ok(manifest) = read_parts_manifest(manifest_path.as_path()) {
+                let total_parts = manifest.parts.len();
+                if total_parts > 0 {
+                    for (index, _part) in manifest.parts.iter().enumerate() {
+                        emit_progress(
+                            progress.as_ref(),
+                            format!("cached {component} part {}/{}", index + 1, total_parts),
+                        );
+                    }
+                    emit_progress(
+                        progress.as_ref(),
+                        format!("downloaded {component} parts ({total_parts}/{total_parts})"),
+                    );
+                }
+            }
             return Ok(());
         }
 
         let manifest_url = format!("{url}.parts.json");
         emit_progress(
             progress.as_ref(),
-            format!(
-                "downloading {component} manifest: {}",
-                url_leaf_name(manifest_url.as_str())
-            ),
+            format!("downloading {component} manifest"),
         );
         if let Some(manifest_bytes) = download_optional_bytes(manifest_url.as_str())? {
             if let Some(parent) = manifest_path.parent() {
@@ -555,15 +546,7 @@ mod native {
                 if part_matches_cache(local_part_path.as_path(), part)? {
                     emit_progress(
                         progress.as_ref(),
-                        format!(
-                            "cached {component} part {}/{}: {}",
-                            index + 1,
-                            total_parts,
-                            local_part_path
-                                .file_name()
-                                .and_then(|name| name.to_str())
-                                .unwrap_or("part")
-                        ),
+                        format!("cached {component} part {}/{}", index + 1, total_parts),
                     );
                     continue;
                 }
@@ -571,12 +554,7 @@ mod native {
                     resolve_manifest_entry_url(manifest_url.as_str(), part.path.as_str());
                 emit_progress(
                     progress.as_ref(),
-                    format!(
-                        "downloading {component} part {}/{}: {}",
-                        index + 1,
-                        total_parts,
-                        url_leaf_name(part_url.as_str())
-                    ),
+                    format!("downloading {component} part {}/{}", index + 1, total_parts),
                 );
                 ensure_file_cached(local_part_path.as_path(), part_url.as_str())?;
                 if !part_matches_cache(local_part_path.as_path(), part)? {
@@ -609,10 +587,7 @@ mod native {
         // Fallback to monolithic burnpack when no parts manifest is available.
         emit_progress(
             progress.as_ref(),
-            format!(
-                "{component} parts manifest unavailable; downloading monolithic {}",
-                url_leaf_name(url)
-            ),
+            format!("{component} parts manifest unavailable; downloading monolithic burnpack"),
         );
         emit_download_status(
             progress.as_ref(),
@@ -1178,6 +1153,109 @@ mod tests {
         assert!(
             has_head_complete,
             "missing head completion progress; got {:?}",
+            collected
+        );
+
+        std::env::remove_var("BURN_RECONSTRUCTION_CACHE_DIR");
+        std::env::remove_var("BURN_RECONSTRUCTION_YONO_BACKBONE_URL");
+        std::env::remove_var("BURN_RECONSTRUCTION_YONO_HEAD_URL");
+        std::env::remove_var("BURN_RECONSTRUCTION_YONO_PREFER_PARTS");
+        std::env::remove_var("BURN_RECONSTRUCTION_YONO_BURNPACK_PRECISION");
+
+        stop.store(true, Ordering::SeqCst);
+        let _ = std::net::TcpStream::connect(
+            base_url.trim_start_matches("http://").trim_end_matches('/'),
+        );
+        server.join().expect("server thread should exit cleanly");
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    #[test]
+    fn reports_cached_parts_progress_when_manifest_is_complete() {
+        let _lock = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock should succeed");
+
+        let tmp = unique_tmp_dir();
+        let cache_root = tmp.join("cache");
+        let backbone_part = b"backbone-part".to_vec();
+        let head_part = b"head-part".to_vec();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let requests = Arc::new(AtomicUsize::new(0));
+        let (base_url, server) = spawn_parts_server(
+            backbone_part.clone(),
+            head_part.clone(),
+            stop.clone(),
+            requests.clone(),
+        );
+
+        std::env::set_var("BURN_RECONSTRUCTION_CACHE_DIR", &cache_root);
+        std::env::set_var(
+            "BURN_RECONSTRUCTION_YONO_BACKBONE_URL",
+            format!("{base_url}/yono_backbone.bpk"),
+        );
+        std::env::set_var(
+            "BURN_RECONSTRUCTION_YONO_HEAD_URL",
+            format!("{base_url}/yono_head.bpk"),
+        );
+        std::env::set_var("BURN_RECONSTRUCTION_YONO_PREFER_PARTS", "1");
+
+        resolve_or_bootstrap_yono_weights(YonoWeightFormat::Burnpack)
+            .expect("initial burnpack bootstrap should succeed");
+        let requests_after_bootstrap = requests.load(Ordering::SeqCst);
+
+        let progress = Arc::new(Mutex::new(Vec::<String>::new()));
+        let progress_sink = progress.clone();
+        resolve_or_bootstrap_yono_weights_with_precision_and_progress(
+            YonoWeightFormat::Burnpack,
+            burn_yono::YonoWeightPrecision::F16,
+            move |message| {
+                progress_sink
+                    .lock()
+                    .expect("progress lock should succeed")
+                    .push(message);
+            },
+        )
+        .expect("cached burnpack resolve should succeed");
+
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            requests_after_bootstrap,
+            "cached resolve should not re-download parts"
+        );
+
+        let collected = progress
+            .lock()
+            .expect("progress lock should succeed")
+            .clone();
+        assert!(
+            collected
+                .iter()
+                .any(|entry| entry.contains("using cached backbone parts manifest")),
+            "missing cached backbone manifest progress; got {:?}",
+            collected
+        );
+        assert!(
+            collected
+                .iter()
+                .any(|entry| entry.contains("using cached head parts manifest")),
+            "missing cached head manifest progress; got {:?}",
+            collected
+        );
+        assert!(
+            collected
+                .iter()
+                .any(|entry| entry.contains("cached backbone part 1/1")),
+            "missing cached backbone part progress; got {:?}",
+            collected
+        );
+        assert!(
+            collected
+                .iter()
+                .any(|entry| entry.contains("cached head part 1/1")),
+            "missing cached head part progress; got {:?}",
             collected
         );
 

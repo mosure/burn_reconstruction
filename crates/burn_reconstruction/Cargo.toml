@@ -1,7 +1,7 @@
 [package]
 name = "burn_reconstruction"
 description = "burn feed-forward gaussian splatting"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["mosure <mitchell@mosure.me>"]
 license = "MIT"
@@ -34,7 +34,7 @@ correctness = ["burn_yono/correctness"]
 raw_yono = []
 
 [dependencies]
-burn_yono = { version = "0.1.0", path = "../burn_yono", default-features = false, features = [
+burn_yono = { version = "0.1.1", path = "../burn_yono", default-features = false, features = [
   "backend_ndarray",
   "backend_wgpu",
   "wgpu_fusion",

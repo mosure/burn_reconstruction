@@ -763,7 +763,7 @@ fn native_load_pipeline(
 ) -> Result<ImageToGaussianPipeline, String> {
     let start = Instant::now();
     log::info!("bevy_reconstruction: resolving model weights...");
-    send_worker_status(event_tx, "resolving model weights...");
+    send_worker_status(event_tx, "resolving model files (cache + remote)...");
 
     let cfg = PipelineConfig {
         quality: PipelineQuality::Balanced,
@@ -775,7 +775,9 @@ fn native_load_pipeline(
         YonoWeightFormat::Burnpack,
         YonoWeightPrecision::F16,
         move |status| {
-            let _ = progress_tx.send(NativeWorkerEvent::Status(status));
+            let _ = progress_tx.send(NativeWorkerEvent::Status(format!(
+                "loading model weights: {status}"
+            )));
         },
     )
     .map_err(|err| format!("failed to resolve model weights: {err}"))?;
@@ -785,8 +787,15 @@ fn native_load_pipeline(
         start.elapsed().as_secs_f64()
     );
 
-    let (pipeline, _load_report) = ImageToGaussianPipeline::load_default(cfg, weights)
+    let progress_tx = event_tx.clone();
+    let (pipeline, _load_report) =
+        ImageToGaussianPipeline::load_default_with_progress(cfg, weights, move |status| {
+            let _ = progress_tx.send(NativeWorkerEvent::Status(format!(
+                "loading model weights: {status}"
+            )));
+        })
         .map_err(|err| format!("failed to initialize inference pipeline: {err}"))?;
+    send_worker_status(event_tx, "yono modules initialized; preparing inference...");
     log::info!(
         "bevy_reconstruction: model initialized in {:.2}s total",
         start.elapsed().as_secs_f64()
@@ -1424,11 +1433,11 @@ fn poll_native_worker_events(
                 }
                 worker.run_in_flight = false;
 
-                ui.status = format!(
-                    "inference complete: {} / {} gaussians, {:.2} ms total",
+                ui.status = format_inference_complete_status(
+                    &done.timings,
                     done.selected_gaussians,
                     done.total_gaussians,
-                    done.timings.total.as_secs_f64() * 1000.0
+                    None,
                 );
                 log::info!(
                     "bevy_reconstruction: spawned cloud entity {:?} with {} gaussians",
@@ -1612,12 +1621,11 @@ fn poll_wasm_inference_worker(
                             ui.pending_camera_focus_index = Some(index);
                         }
                     }
-                    ui.status = format!(
-                        "inference complete: {} / {} gaussians, {:.2} ms total (frustums: {})",
+                    ui.status = format_inference_complete_status(
+                        &done.timings,
                         done.selected_gaussians,
                         done.total_gaussians,
-                        done.timings.total.as_secs_f64() * 1000.0,
-                        frustum_count
+                        Some(frustum_count),
                     );
                     log::info!(
                         "bevy_reconstruction: spawned wasm cloud entity {:?} with {} gaussians.",
@@ -1691,7 +1699,7 @@ fn start_wasm_run_if_ready(ui: &mut UiState, runtime: &mut WasmInferenceRuntime)
 #[cfg(target_arch = "wasm32")]
 async fn wasm_load_pipeline(progress: WasmProgress) -> Result<ImageToGaussianPipeline, String> {
     let model_root = wasm_model_root_url()?;
-    set_wasm_progress(
+    set_wasm_model_progress(
         &progress,
         format!("resolving wasm model files from {model_root}"),
     );
@@ -1705,15 +1713,17 @@ async fn wasm_load_pipeline(progress: WasmProgress) -> Result<ImageToGaussianPip
     let backbone_parts = fetch_parts_bundle(backbone_url.as_str(), "backbone", &progress).await?;
     let head_parts = fetch_parts_bundle(head_url.as_str(), "head", &progress).await?;
 
-    set_wasm_progress(&progress, "initializing yono pipeline modules...");
+    set_wasm_model_progress(&progress, "initializing yono pipeline modules...");
     let cfg = PipelineConfig::default();
     let device = default_device();
     ensure_wasm_wgpu_runtime(&device).await;
-    let (pipeline, load_report) = ImageToGaussianPipeline::load_from_yono_parts(
+    let progress_for_load = progress.clone();
+    let (pipeline, load_report) = ImageToGaussianPipeline::load_from_yono_parts_with_progress(
         device,
         cfg,
         backbone_parts.as_slice(),
         head_parts.as_slice(),
+        move |status| set_wasm_model_progress(&progress_for_load, status),
     )
     .map_err(|err| format!("failed to initialize wasm inference pipeline: {err}"))?;
     log::info!(
@@ -1721,7 +1731,7 @@ async fn wasm_load_pipeline(progress: WasmProgress) -> Result<ImageToGaussianPip
         load_report.backbone.applied,
         load_report.head.applied
     );
-    set_wasm_progress(&progress, "model initialization complete");
+    set_wasm_model_progress(&progress, "model initialization complete");
     Ok(pipeline)
 }
 
@@ -1979,13 +1989,7 @@ async fn fetch_parts_bundle(
     progress: &WasmProgress,
 ) -> Result<Vec<Vec<u8>>, String> {
     let manifest_url = format!("{base_burnpack_url}.parts.json");
-    set_wasm_progress(
-        progress,
-        format!(
-            "downloading {component} manifest: {}",
-            url_leaf_name(&manifest_url)
-        ),
-    );
+    set_wasm_model_progress(progress, format!("downloading {component} manifest"));
     let manifest_bytes = fetch_url_bytes(manifest_url.as_str()).await?;
     let manifest: WasmPartsManifest = serde_json::from_slice(manifest_bytes.as_slice())
         .map_err(|err| format!("failed to parse parts manifest {manifest_url}: {err}"))?;
@@ -2005,18 +2009,13 @@ async fn fetch_parts_bundle(
                 .unwrap_or(manifest_url.as_str());
             join_url(manifest_parent, part.path.as_str())
         };
-        set_wasm_progress(
+        set_wasm_model_progress(
             progress,
-            format!(
-                "downloading {component} part {}/{}: {}",
-                index + 1,
-                total,
-                url_leaf_name(&url)
-            ),
+            format!("downloading {component} part {}/{}", index + 1, total),
         );
         parts.push(fetch_url_bytes(url.as_str()).await?);
     }
-    set_wasm_progress(
+    set_wasm_model_progress(
         progress,
         format!("downloaded {component} parts ({total}/{total})"),
     );
@@ -2057,8 +2056,11 @@ fn set_wasm_progress(progress: &WasmProgress, message: impl Into<String>) {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn url_leaf_name(url: &str) -> String {
-    url.rsplit('/').next().unwrap_or(url).to_string()
+fn set_wasm_model_progress(progress: &WasmProgress, message: impl Into<String>) {
+    set_wasm_progress(
+        progress,
+        format!("loading model weights: {}", message.into()),
+    );
 }
 
 fn decode_thumbnail_handle(
@@ -2792,6 +2794,54 @@ fn frustum_half_extents(base_half: f32, image_aspect: f32) -> (f32, f32) {
     }
 }
 
+fn format_inference_complete_status(
+    timings: &burn_reconstruction::ForwardTimings,
+    selected_gaussians: usize,
+    total_gaussians: usize,
+    frustum_count: Option<usize>,
+) -> String {
+    let millis = timings.total.as_secs_f64() * 1000.0;
+    match frustum_count {
+        Some(count) if millis.is_finite() && millis >= 0.05 => format!(
+            "inference complete: {} / {} gaussians, {:.2} ms total (frustums: {})",
+            selected_gaussians, total_gaussians, millis, count
+        ),
+        Some(count) => format!(
+            "inference complete: {} / {} gaussians (frustums: {})",
+            selected_gaussians, total_gaussians, count
+        ),
+        None if millis.is_finite() && millis >= 0.05 => format!(
+            "inference complete: {} / {} gaussians, {:.2} ms total",
+            selected_gaussians, total_gaussians, millis
+        ),
+        None => format!(
+            "inference complete: {} / {} gaussians",
+            selected_gaussians, total_gaussians
+        ),
+    }
+}
+
+fn status_is_busy(status_lower: &str) -> bool {
+    [
+        "running inference",
+        "queued reconstruction",
+        "reconstruction queued",
+        "loading model",
+        "resolving model",
+        "initializing yono",
+        "initializing wasm",
+        "downloading",
+        "downloaded",
+        "manifest",
+        "parts",
+        "cached",
+        "fetching",
+        "preparing inference",
+    ]
+    .iter()
+    .any(|needle| status_lower.contains(needle))
+}
+
 fn status_badge_from_ui(ui: &UiState) -> (String, StatusBadgeTone) {
     let status_lower = ui.status.to_ascii_lowercase();
     if status_lower.contains("failed") || status_lower.contains("error") {
@@ -2800,10 +2850,7 @@ fn status_badge_from_ui(ui: &UiState) -> (String, StatusBadgeTone) {
     if status_lower.contains("inference complete") {
         return ("complete".to_string(), StatusBadgeTone::Success);
     }
-    if status_lower.contains("running inference")
-        || status_lower.contains("loading model")
-        || status_lower.contains("queued reconstruction")
-    {
+    if status_is_busy(&status_lower) {
         return ("running".to_string(), StatusBadgeTone::Busy);
     }
     if ui.selected_images.len() >= 2 {
@@ -3153,18 +3200,16 @@ mod tests {
         let mut packed = Vec::with_capacity(row_width * 2);
 
         let mut push_row = |opacity: f32| {
-            packed.extend_from_slice(
-                &[
-                    0.0, 0.0, 0.0, // mean
-                    0.2, 0.3, 0.4, // SH dc
-                    1.0, 0.0, 0.0, // covariance row 0
-                    0.0, 1.0, 0.0, // covariance row 1
-                    0.0, 0.0, 1.0, // covariance row 2
-                    0.1, 0.1, 0.1, // fallback scale
-                    0.0, 0.0, 0.0, 1.0, // fallback rotation xyzw
-                    opacity, // opacity
-                ],
-            );
+            packed.extend_from_slice(&[
+                0.0, 0.0, 0.0, // mean
+                0.2, 0.3, 0.4, // SH dc
+                1.0, 0.0, 0.0, // covariance row 0
+                0.0, 1.0, 0.0, // covariance row 1
+                0.0, 0.0, 1.0, // covariance row 2
+                0.1, 0.1, 0.1, // fallback scale
+                0.0, 0.0, 0.0, 1.0,     // fallback rotation xyzw
+                opacity, // opacity
+            ]);
         };
 
         push_row(0.25);
@@ -3195,18 +3240,16 @@ mod tests {
         let mut packed = Vec::with_capacity(row_width * 3);
 
         let mut push_row = |opacity: f32| {
-            packed.extend_from_slice(
-                &[
-                    0.0, 0.0, 0.0, // mean
-                    0.1, 0.1, 0.1, // SH dc
-                    1.0, 0.0, 0.0, // covariance row 0
-                    0.0, 1.0, 0.0, // covariance row 1
-                    0.0, 0.0, 1.0, // covariance row 2
-                    0.1, 0.1, 0.1, // fallback scale
-                    0.0, 0.0, 0.0, 1.0, // fallback rotation xyzw
-                    opacity, // opacity
-                ],
-            );
+            packed.extend_from_slice(&[
+                0.0, 0.0, 0.0, // mean
+                0.1, 0.1, 0.1, // SH dc
+                1.0, 0.0, 0.0, // covariance row 0
+                0.0, 1.0, 0.0, // covariance row 1
+                0.0, 0.0, 1.0, // covariance row 2
+                0.1, 0.1, 0.1, // fallback scale
+                0.0, 0.0, 0.0, 1.0,     // fallback rotation xyzw
+                opacity, // opacity
+            ]);
         };
 
         push_row(-0.5);
@@ -3253,6 +3296,28 @@ mod tests {
         ui.status = "failed to load startup images".to_string();
         let (_, tone_error) = status_badge_from_ui(&ui);
         assert_eq!(tone_error, StatusBadgeTone::Error);
+    }
+
+    #[test]
+    fn status_badge_treats_model_init_and_resolve_as_busy() {
+        let mut ui = UiState {
+            status: "resolving model weights...".to_string(),
+            ..UiState::default()
+        };
+        let (_, tone_resolving) = status_badge_from_ui(&ui);
+        assert_eq!(tone_resolving, StatusBadgeTone::Busy);
+
+        ui.status = "initializing yono pipeline modules...".to_string();
+        let (_, tone_initializing) = status_badge_from_ui(&ui);
+        assert_eq!(tone_initializing, StatusBadgeTone::Busy);
+
+        ui.status = "yono modules initialized in 12.0s; preparing inference...".to_string();
+        let (_, tone_preparing) = status_badge_from_ui(&ui);
+        assert_eq!(tone_preparing, StatusBadgeTone::Busy);
+
+        ui.status = "loading model weights: cached backbone part 1/16".to_string();
+        let (_, tone_cached_parts) = status_badge_from_ui(&ui);
+        assert_eq!(tone_cached_parts, StatusBadgeTone::Busy);
     }
 
     #[test]

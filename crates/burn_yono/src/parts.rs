@@ -226,6 +226,29 @@ where
     Init: FnMut() -> M,
     Apply: FnMut(&mut M, Vec<u8>) -> Result<ApplyResult, String>,
 {
+    load_model_from_burnpack_parts_with_progress(
+        burnpack_candidates,
+        label,
+        verify_checksums,
+        &mut init_model,
+        &mut apply_part,
+        |_| {},
+    )
+}
+
+pub fn load_model_from_burnpack_parts_with_progress<M, Init, Apply, Progress>(
+    burnpack_candidates: &[PathBuf],
+    label: &str,
+    verify_checksums: bool,
+    mut init_model: Init,
+    mut apply_part: Apply,
+    mut progress: Progress,
+) -> Result<Option<(M, ApplyResult)>, String>
+where
+    Init: FnMut() -> M,
+    Apply: FnMut(&mut M, Vec<u8>) -> Result<ApplyResult, String>,
+    Progress: FnMut(String),
+{
     let any_candidate_exists = burnpack_candidates
         .iter()
         .any(|candidate| candidate.exists());
@@ -251,8 +274,14 @@ where
 
         let mut model = init_model();
         let mut applied = BTreeSet::new();
+        let total_parts = manifest.parts.len();
         for (index, part) in manifest.parts.iter().enumerate() {
             let part_path = resolve_part_entry_path(&manifest_path, &part.path)?;
+            progress(format!(
+                "loading {label} part {}/{}",
+                index + 1,
+                total_parts
+            ));
             let bytes = fs::read(&part_path).map_err(|err| {
                 format!(
                     "failed to read {} part {}: {err}",
@@ -291,6 +320,9 @@ where
                 applied.insert(key);
             }
         }
+        progress(format!(
+            "loaded {label} parts ({total_parts}/{total_parts})"
+        ));
 
         return Ok(Some((
             model,

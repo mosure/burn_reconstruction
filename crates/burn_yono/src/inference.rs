@@ -12,9 +12,10 @@ use image::DynamicImage;
 
 #[cfg(feature = "import")]
 use crate::import::{
-    load_yono_backbone_from_burnpack_candidates, load_yono_backbone_from_burnpack_part_bytes,
-    load_yono_backbone_from_safetensors, load_yono_head_from_burnpack_candidates,
-    load_yono_head_from_burnpack_part_bytes, load_yono_head_from_safetensors,
+    load_yono_backbone_from_burnpack_candidates_with_progress,
+    load_yono_backbone_from_burnpack_part_bytes_with_progress, load_yono_backbone_from_safetensors,
+    load_yono_head_from_burnpack_candidates_with_progress,
+    load_yono_head_from_burnpack_part_bytes_with_progress, load_yono_head_from_safetensors,
 };
 use crate::model::{
     CrocoStyleBackbone, CrocoStyleBackboneConfig, TransformerDecoderSpec, YonoHeadConfig,
@@ -150,6 +151,18 @@ impl<B: Backend> YonoModelBundle<B> {
         device: &B::Device,
         weights: &YonoWeights,
     ) -> Result<(Self, YonoLoadReport), YonoPipelineError> {
+        Self::load_from_weights_with_progress(device, weights, |_| {})
+    }
+
+    #[cfg(feature = "import")]
+    pub fn load_from_weights_with_progress<F>(
+        device: &B::Device,
+        weights: &YonoWeights,
+        progress: F,
+    ) -> Result<(Self, YonoLoadReport), YonoPipelineError>
+    where
+        F: Fn(String),
+    {
         match weights.format {
             YonoWeightFormat::Safetensors => {
                 if !weights.backbone.exists() {
@@ -200,16 +213,20 @@ impl<B: Backend> YonoModelBundle<B> {
                     burnpack_precision_candidates(weights.backbone.as_path(), weights.precision);
                 let head_candidates =
                     burnpack_precision_candidates(weights.head.as_path(), weights.precision);
-                let (backbone, backbone_apply) = load_yono_backbone_from_burnpack_candidates::<B>(
-                    device,
-                    full_backbone_config(),
-                    backbone_candidates.as_slice(),
-                )?;
-                let (head, head_apply) = load_yono_head_from_burnpack_candidates::<B>(
-                    device,
-                    full_head_config(),
-                    head_candidates.as_slice(),
-                )?;
+                let (backbone, backbone_apply) =
+                    load_yono_backbone_from_burnpack_candidates_with_progress::<B, _>(
+                        device,
+                        full_backbone_config(),
+                        backbone_candidates.as_slice(),
+                        |message| progress(message),
+                    )?;
+                let (head, head_apply) =
+                    load_yono_head_from_burnpack_candidates_with_progress::<B, _>(
+                        device,
+                        full_head_config(),
+                        head_candidates.as_slice(),
+                        |message| progress(message),
+                    )?;
                 (backbone, backbone_apply, head, head_apply)
             }
         };
@@ -242,13 +259,37 @@ impl<B: Backend> YonoModelBundle<B> {
         backbone_parts: &[Vec<u8>],
         head_parts: &[Vec<u8>],
     ) -> Result<(Self, YonoLoadReport), YonoPipelineError> {
-        let (backbone, backbone_apply) = load_yono_backbone_from_burnpack_part_bytes::<B>(
+        Self::load_from_burnpack_part_bytes_with_progress(
             device,
-            full_backbone_config(),
             backbone_parts,
+            head_parts,
+            |_| {},
+        )
+    }
+
+    #[cfg(feature = "import")]
+    pub fn load_from_burnpack_part_bytes_with_progress<F>(
+        device: &B::Device,
+        backbone_parts: &[Vec<u8>],
+        head_parts: &[Vec<u8>],
+        progress: F,
+    ) -> Result<(Self, YonoLoadReport), YonoPipelineError>
+    where
+        F: Fn(String),
+    {
+        let (backbone, backbone_apply) =
+            load_yono_backbone_from_burnpack_part_bytes_with_progress::<B, _>(
+                device,
+                full_backbone_config(),
+                backbone_parts,
+                |message| progress(message),
+            )?;
+        let (head, head_apply) = load_yono_head_from_burnpack_part_bytes_with_progress::<B, _>(
+            device,
+            full_head_config(),
+            head_parts,
+            |message| progress(message),
         )?;
-        let (head, head_apply) =
-            load_yono_head_from_burnpack_part_bytes::<B>(device, full_head_config(), head_parts)?;
 
         let report = YonoLoadReport {
             backbone: ApplySummary::from_apply_result(&backbone_apply),

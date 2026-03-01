@@ -1,10 +1,10 @@
-# burn_reconstruction 🔥🌌
+# burn_reconstruction 🕊️🔥🌌
 
 [![test](https://github.com/mosure/burn_reconstruction/workflows/test/badge.svg)](https://github.com/Mosure/burn_reconstruction/actions?query=workflow%3Atest)
 [![GitHub License](https://img.shields.io/github/license/mosure/burn_reconstruction)](https://raw.githubusercontent.com/mosure/burn_reconstruction/main/LICENSE)
 [![crates.io](https://img.shields.io/crates/v/burn_reconstruction.svg)](https://crates.io/crates/burn_reconstruction)
 
-bevy / burn feed-forward gaussian splatting.
+bevy / burn feed-forward gaussian splatting. view the [wasm example](https://mosure.github.io/burn_reconstruction/?image=re10k/0.png&image=re10k/1.png&image=re10k/2.png)
 
 ![teaser](docs/teaser.png)
 
@@ -15,6 +15,8 @@ bevy / burn feed-forward gaussian splatting.
 - [x] CLI export to GLB (`KHR_gaussian_splatting`)
 - [x] bevy UI (native + wasm)
 - [x] model auto-bootstrap + cache (parts-first burnpack)
+- [ ] [bevy_synth](https://github.com/mosure/bevy_synth) integration
+- [ ] [bevy_zeroverse](https://github.com/mosure/bevy_zeroverse) fine-tuning/training
 
 
 ## setup

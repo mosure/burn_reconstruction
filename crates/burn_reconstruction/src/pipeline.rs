@@ -1,4 +1,6 @@
 use std::path::{Path, PathBuf};
+#[cfg(target_arch = "wasm32")]
+use std::time::Duration;
 
 use crate::backend::{default_device, BackendDevice, BackendImpl};
 use crate::bootstrap::{
@@ -261,9 +263,26 @@ impl ImageToGaussianPipeline {
         cfg: PipelineConfig,
         weights: PipelineWeights,
     ) -> Result<(Self, PipelineLoadReport), PipelineError> {
+        Self::load_with_progress(device, cfg, weights, |_| {})
+    }
+
+    /// Loads model weights on a user-provided WGPU device and reports progress.
+    pub fn load_with_progress<F>(
+        device: BackendDevice,
+        cfg: PipelineConfig,
+        weights: PipelineWeights,
+        progress: F,
+    ) -> Result<(Self, PipelineLoadReport), PipelineError>
+    where
+        F: Fn(String),
+    {
         match cfg.model {
             PipelineModel::Yono => {
-                let (yono, report) = YonoModelBundle::load_from_weights(&device, &weights.yono)?;
+                let (yono, report) = YonoModelBundle::load_from_weights_with_progress(
+                    &device,
+                    &weights.yono,
+                    progress,
+                )?;
                 Ok((
                     Self { cfg, device, yono },
                     PipelineLoadReport {
@@ -280,7 +299,19 @@ impl ImageToGaussianPipeline {
         cfg: PipelineConfig,
         weights: PipelineWeights,
     ) -> Result<(Self, PipelineLoadReport), PipelineError> {
-        Self::load(default_device(), cfg, weights)
+        Self::load_with_progress(default_device(), cfg, weights, |_| {})
+    }
+
+    /// Loads model weights on the default WGPU device and reports progress.
+    pub fn load_default_with_progress<F>(
+        cfg: PipelineConfig,
+        weights: PipelineWeights,
+        progress: F,
+    ) -> Result<(Self, PipelineLoadReport), PipelineError>
+    where
+        F: Fn(String),
+    {
+        Self::load_with_progress(default_device(), cfg, weights, progress)
     }
 
     /// Loads YoNo models directly from burnpack parts bytes.
@@ -293,12 +324,27 @@ impl ImageToGaussianPipeline {
         backbone_parts: &[Vec<u8>],
         head_parts: &[Vec<u8>],
     ) -> Result<(Self, PipelineLoadReport), PipelineError> {
+        Self::load_from_yono_parts_with_progress(device, cfg, backbone_parts, head_parts, |_| {})
+    }
+
+    /// Loads YoNo models directly from burnpack parts bytes and reports progress.
+    pub fn load_from_yono_parts_with_progress<F>(
+        device: BackendDevice,
+        cfg: PipelineConfig,
+        backbone_parts: &[Vec<u8>],
+        head_parts: &[Vec<u8>],
+        progress: F,
+    ) -> Result<(Self, PipelineLoadReport), PipelineError>
+    where
+        F: Fn(String),
+    {
         match cfg.model {
             PipelineModel::Yono => {
-                let (yono, report) = YonoModelBundle::load_from_burnpack_part_bytes(
+                let (yono, report) = YonoModelBundle::load_from_burnpack_part_bytes_with_progress(
                     &device,
                     backbone_parts,
                     head_parts,
+                    progress,
                 )?;
                 Ok((
                     Self { cfg, device, yono },
@@ -488,16 +534,21 @@ impl ImageToGaussianPipeline {
         _synchronize: bool,
     ) -> Result<PipelineRunWithCameras, PipelineError> {
         let named_images = normalize_input_images(images);
-        // On wasm, avoid std::time::Instant-backed timing paths.
+        let total_start_ms = wasm_now_ms();
         let output = self.yono.forward_from_image_bytes(
             named_images.as_slice(),
             self.cfg.image_size,
             &self.device,
         )?;
         let camera_poses = decode_camera_poses_async(output.camera_poses).await?;
+        let mut timings = ForwardTimings::default();
+        let total_secs = ((wasm_now_ms() - total_start_ms) / 1000.0).max(0.0);
+        if total_secs.is_finite() {
+            timings.total = Duration::from_secs_f64(total_secs);
+        }
         Ok(PipelineRunWithCameras {
             gaussians: output.gaussians_flat,
-            timings: ForwardTimings::default(),
+            timings,
             camera_poses,
         })
     }
@@ -619,6 +670,11 @@ fn decode_camera_poses_values(values: &[f32], batch: usize, views: usize) -> Vec
         ]);
     }
     out
+}
+
+#[cfg(target_arch = "wasm32")]
+fn wasm_now_ms() -> f64 {
+    js_sys::Date::now()
 }
 
 fn from_apply_summary(summary: &ApplySummary) -> ComponentLoadReport {

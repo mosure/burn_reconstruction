@@ -1291,7 +1291,7 @@ checksum = "17d24d7906c7de556033168b3485de36c59049fbaef0c2c44c715a23e0329b10"
 
 [[package]]
 name = "bevy_reconstruction"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bevy",
  "bevy_app",
@@ -2240,7 +2240,7 @@ dependencies = [
 
 [[package]]
 name = "burn_reconstruction"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "burn",
  "burn_yono",
@@ -2262,7 +2262,7 @@ dependencies = [
 
 [[package]]
 name = "burn_reconstruction_zeroverse"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "burn_yono",
  "serde",
@@ -2271,7 +2271,7 @@ dependencies = [
 
 [[package]]
 name = "burn_yono"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "burn",
  "burn-store",

@@ -18,7 +18,8 @@ use crate::model::{
     CrocoStyleBackbone, CrocoStyleBackboneConfig, YonoHeadConfig, YonoHeadPipeline,
 };
 use crate::parts::{
-    load_model_from_burnpack_parts, write_burnpack_parts_for_wasm, BurnpackPartsReport,
+    load_model_from_burnpack_parts_with_progress, write_burnpack_parts_for_wasm,
+    BurnpackPartsReport,
 };
 use crate::{burnpack_path_for_precision, YonoWeightPrecision};
 
@@ -76,18 +77,31 @@ pub fn load_yono_head_from_burnpack_candidates<B: Backend>(
     config: YonoHeadConfig,
     paths: &[PathBuf],
 ) -> Result<(YonoHeadPipeline<B>, ApplyResult), ImportError> {
+    load_yono_head_from_burnpack_candidates_with_progress(device, config, paths, |_| {})
+}
+
+pub fn load_yono_head_from_burnpack_candidates_with_progress<B: Backend, F>(
+    device: &B::Device,
+    config: YonoHeadConfig,
+    paths: &[PathBuf],
+    mut progress: F,
+) -> Result<(YonoHeadPipeline<B>, ApplyResult), ImportError>
+where
+    F: FnMut(String),
+{
     if paths.is_empty() {
         return Err(ImportError::Apply(
             "no burnpack candidate paths supplied for YoNo head".to_string(),
         ));
     }
 
-    if let Some((model, result)) = load_model_from_burnpack_parts(
+    if let Some((model, result)) = load_model_from_burnpack_parts_with_progress(
         paths,
         "YoNo head",
         true,
         || YonoHeadPipeline::new(device, config.clone()),
         |model, part_bytes| apply_burnpack_part_bytes(model, part_bytes),
+        &mut progress,
     )
     .map_err(ImportError::Parts)?
     {
@@ -95,6 +109,7 @@ pub fn load_yono_head_from_burnpack_candidates<B: Backend>(
     }
 
     let fallback = first_existing_or_first(paths);
+    progress("loading YoNo head monolithic burnpack".to_string());
     let mut model = YonoHeadPipeline::new(device, config);
     let mut store = BurnpackStore::from_file(fallback)
         .auto_extension(false)
@@ -112,8 +127,22 @@ pub fn load_yono_head_from_burnpack_part_bytes<B: Backend>(
     config: YonoHeadConfig,
     parts: &[Vec<u8>],
 ) -> Result<(YonoHeadPipeline<B>, ApplyResult), ImportError> {
+    load_yono_head_from_burnpack_part_bytes_with_progress(device, config, parts, |_| {})
+}
+
+pub fn load_yono_head_from_burnpack_part_bytes_with_progress<B: Backend, F>(
+    device: &B::Device,
+    config: YonoHeadConfig,
+    parts: &[Vec<u8>],
+    mut progress: F,
+) -> Result<(YonoHeadPipeline<B>, ApplyResult), ImportError>
+where
+    F: FnMut(String),
+{
     let mut model = YonoHeadPipeline::new(device, config);
-    let result = apply_burnpack_parts_bytes(&mut model, parts)?;
+    let result = apply_burnpack_parts_bytes_with_progress(&mut model, parts, |index, total| {
+        progress(format!("loading yono head part {index}/{total}"))
+    })?;
     Ok((model, result))
 }
 
@@ -145,18 +174,31 @@ pub fn load_yono_backbone_from_burnpack_candidates<B: Backend>(
     config: CrocoStyleBackboneConfig,
     paths: &[PathBuf],
 ) -> Result<(CrocoStyleBackbone<B>, ApplyResult), ImportError> {
+    load_yono_backbone_from_burnpack_candidates_with_progress(device, config, paths, |_| {})
+}
+
+pub fn load_yono_backbone_from_burnpack_candidates_with_progress<B: Backend, F>(
+    device: &B::Device,
+    config: CrocoStyleBackboneConfig,
+    paths: &[PathBuf],
+    mut progress: F,
+) -> Result<(CrocoStyleBackbone<B>, ApplyResult), ImportError>
+where
+    F: FnMut(String),
+{
     if paths.is_empty() {
         return Err(ImportError::Apply(
             "no burnpack candidate paths supplied for YoNo backbone".to_string(),
         ));
     }
 
-    if let Some((model, result)) = load_model_from_burnpack_parts(
+    if let Some((model, result)) = load_model_from_burnpack_parts_with_progress(
         paths,
         "YoNo backbone",
         true,
         || CrocoStyleBackbone::new(device, config.clone()),
         |model, part_bytes| apply_burnpack_part_bytes(model, part_bytes),
+        &mut progress,
     )
     .map_err(ImportError::Parts)?
     {
@@ -164,6 +206,7 @@ pub fn load_yono_backbone_from_burnpack_candidates<B: Backend>(
     }
 
     let fallback = first_existing_or_first(paths);
+    progress("loading YoNo backbone monolithic burnpack".to_string());
     let mut model = CrocoStyleBackbone::new(device, config);
     let mut store = BurnpackStore::from_file(fallback)
         .auto_extension(false)
@@ -181,8 +224,22 @@ pub fn load_yono_backbone_from_burnpack_part_bytes<B: Backend>(
     config: CrocoStyleBackboneConfig,
     parts: &[Vec<u8>],
 ) -> Result<(CrocoStyleBackbone<B>, ApplyResult), ImportError> {
+    load_yono_backbone_from_burnpack_part_bytes_with_progress(device, config, parts, |_| {})
+}
+
+pub fn load_yono_backbone_from_burnpack_part_bytes_with_progress<B: Backend, F>(
+    device: &B::Device,
+    config: CrocoStyleBackboneConfig,
+    parts: &[Vec<u8>],
+    mut progress: F,
+) -> Result<(CrocoStyleBackbone<B>, ApplyResult), ImportError>
+where
+    F: FnMut(String),
+{
     let mut model = CrocoStyleBackbone::new(device, config);
-    let result = apply_burnpack_parts_bytes(&mut model, parts)?;
+    let result = apply_burnpack_parts_bytes_with_progress(&mut model, parts, |index, total| {
+        progress(format!("loading yono backbone part {index}/{total}"))
+    })?;
     Ok((model, result))
 }
 
@@ -665,15 +722,19 @@ where
         .map_err(|err| format!("{err:?}"))
 }
 
-fn apply_burnpack_parts_bytes<M, B: Backend>(
+fn apply_burnpack_parts_bytes_with_progress<M, B: Backend, F>(
     model: &mut M,
     parts: &[Vec<u8>],
+    mut progress: F,
 ) -> Result<ApplyResult, ImportError>
 where
     M: Module<B>,
+    F: FnMut(usize, usize),
 {
     let mut applied = BTreeSet::new();
-    for part in parts {
+    let total = parts.len();
+    for (index, part) in parts.iter().enumerate() {
+        progress(index + 1, total);
         let result = apply_burnpack_part_bytes(model, part.clone()).map_err(ImportError::Apply)?;
         for key in result.applied {
             applied.insert(key);
