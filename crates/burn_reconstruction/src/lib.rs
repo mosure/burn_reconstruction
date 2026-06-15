@@ -14,8 +14,12 @@ pub use bootstrap::{
     resolve_or_bootstrap_yono_weights_with_config,
     resolve_or_bootstrap_yono_weights_with_config_and_progress,
     resolve_or_bootstrap_yono_weights_with_precision,
-    resolve_or_bootstrap_yono_weights_with_precision_and_progress, BootstrapProgressCallback,
-    ModelBootstrapError, YonoBootstrapConfig,
+    resolve_or_bootstrap_yono_weights_with_precision_and_progress,
+    resolve_or_bootstrap_zipsplat_weights, resolve_or_bootstrap_zipsplat_weights_with_config,
+    resolve_or_bootstrap_zipsplat_weights_with_config_and_progress,
+    resolve_or_bootstrap_zipsplat_weights_with_precision,
+    resolve_or_bootstrap_zipsplat_weights_with_precision_and_progress, BootstrapProgressCallback,
+    ModelBootstrapError, YonoBootstrapConfig, ZipSplatBootstrapConfig,
 };
 pub use build_info::{app_banner, build_label, git_revision_short, long_version};
 #[cfg(target_arch = "wasm32")]
@@ -28,10 +32,15 @@ pub use burn_yono::{
     },
     ForwardTimings, YonoWeightFormat, YonoWeightPrecision, YonoWeights,
 };
+pub use burn_zipsplat::{
+    ZipSplatCompression, ZipSplatConfig, ZipSplatPipelineError, ZipSplatWeightFormat,
+    ZipSplatWeightPrecision, ZipSplatWeights,
+};
 pub use pipeline::{
     ComponentLoadReport, ImageToGaussianPipeline, PipelineConfig, PipelineError,
     PipelineExportReport, PipelineGaussians, PipelineInputImage, PipelineLoadReport, PipelineModel,
-    PipelineQuality, PipelineRunOutput, PipelineRunWithCameras, PipelineWeights,
+    PipelineModelCapabilities, PipelineQuality, PipelineQualityControl, PipelineRunOutput,
+    PipelineRunWithCameras, PipelineWeights, ZipSplatQualityLevel, ZIP_SPLAT_QUALITY_PRESETS,
 };
 pub use utils::setup_hooks;
 

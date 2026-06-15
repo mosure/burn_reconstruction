@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use burn_yono::{YonoWeightFormat, YonoWeightPrecision, YonoWeights};
+use burn_zipsplat::{ZipSplatWeightPrecision, ZipSplatWeights};
 
 /// Thread-safe callback used to report native bootstrap progress.
 pub type BootstrapProgressCallback = Arc<dyn Fn(String) + Send + Sync + 'static>;
@@ -34,6 +35,44 @@ pub struct YonoBootstrapConfig {
     ///
     /// Defaults to `f16` to reduce transfer size and cache footprint.
     pub burnpack_precision: YonoWeightPrecision,
+}
+
+/// Model source and cache settings for ZipSplat bootstrap.
+#[derive(Debug, Clone)]
+pub struct ZipSplatBootstrapConfig {
+    /// Optional explicit cache directory where ZipSplat weights should be stored.
+    ///
+    /// When unset on native targets, the default is:
+    /// `~/.burn_reconstruction/models/zipsplat`.
+    pub cache_root: Option<PathBuf>,
+    /// Full URL for the official ZipSplat PyTorch checkpoint archive.
+    pub checkpoint_url: String,
+    /// Local checkpoint archive filename inside the cache directory.
+    pub checkpoint_file: String,
+    /// Native burnpack output filename.
+    pub burnpack_file: String,
+    /// Preferred native burnpack precision.
+    pub burnpack_precision: ZipSplatWeightPrecision,
+    /// Write `.bpk.parts.json` and part files after import for web hosting.
+    pub write_parts: bool,
+    /// Maximum part size used when `write_parts` is true.
+    pub parts_max_mib: u64,
+}
+
+impl Default for ZipSplatBootstrapConfig {
+    fn default() -> Self {
+        Self {
+            cache_root: None,
+            checkpoint_url:
+                "https://huggingface.co/veichta/zipsplat/resolve/main/zipsplat-da3g-252p.tar"
+                    .to_string(),
+            checkpoint_file: "zipsplat-da3g-252p.tar".to_string(),
+            burnpack_file: "zipsplat.bpk".to_string(),
+            burnpack_precision: ZipSplatWeightPrecision::F16,
+            write_parts: true,
+            parts_max_mib: burn_yono::import::DEFAULT_PART_SIZE_MIB,
+        }
+    }
 }
 
 impl Default for YonoBootstrapConfig {
@@ -153,6 +192,101 @@ where
     }
 }
 
+/// Resolves ZipSplat weights from local cache and bootstraps the official checkpoint on first use.
+///
+/// Native behavior:
+/// - cache root: `~/.burn_reconstruction/models/zipsplat`
+/// - source checkpoint: official ZipSplat `zipsplat-da3g-252p.tar`
+/// - output: native Burn burnpack (`zipsplat.bpk` / `zipsplat_f16.bpk`)
+///
+/// Environment overrides:
+/// - `BURN_RECONSTRUCTION_CACHE_DIR` (absolute cache root)
+/// - `BURN_RECONSTRUCTION_ZIPSPLAT_CACHE_DIR`
+/// - `BURN_RECONSTRUCTION_ZIPSPLAT_CHECKPOINT_URL`
+/// - `BURN_RECONSTRUCTION_ZIPSPLAT_CHECKPOINT_FILE`
+/// - `BURN_RECONSTRUCTION_ZIPSPLAT_BURNPACK_FILE`
+/// - `BURN_RECONSTRUCTION_ZIPSPLAT_BURNPACK_PRECISION` (`f16` or `f32`)
+/// - `BURN_RECONSTRUCTION_ZIPSPLAT_WRITE_PARTS` (`1|true|yes|on` to enable)
+pub fn resolve_or_bootstrap_zipsplat_weights() -> Result<ZipSplatWeights, ModelBootstrapError> {
+    resolve_or_bootstrap_zipsplat_weights_with_precision(ZipSplatWeightPrecision::F16)
+}
+
+/// Resolves/cache-populates ZipSplat weights using explicit precision selection.
+pub fn resolve_or_bootstrap_zipsplat_weights_with_precision(
+    precision: ZipSplatWeightPrecision,
+) -> Result<ZipSplatWeights, ModelBootstrapError> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = precision;
+        Err(ModelBootstrapError::UnsupportedTarget)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut cfg = native::apply_zipsplat_env_overrides(ZipSplatBootstrapConfig::default());
+        cfg.burnpack_precision = precision;
+        native::resolve_or_bootstrap_zipsplat_weights_native(&cfg, None)
+    }
+}
+
+/// Resolves/cache-populates ZipSplat weights with precision and native progress callbacks.
+pub fn resolve_or_bootstrap_zipsplat_weights_with_precision_and_progress<F>(
+    precision: ZipSplatWeightPrecision,
+    progress: F,
+) -> Result<ZipSplatWeights, ModelBootstrapError>
+where
+    F: Fn(String) + Send + Sync + 'static,
+{
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (precision, progress);
+        Err(ModelBootstrapError::UnsupportedTarget)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut cfg = native::apply_zipsplat_env_overrides(ZipSplatBootstrapConfig::default());
+        cfg.burnpack_precision = precision;
+        native::resolve_or_bootstrap_zipsplat_weights_native(&cfg, Some(Arc::new(progress)))
+    }
+}
+
+/// Resolves/cache-populates ZipSplat weights using explicit non-env configuration.
+pub fn resolve_or_bootstrap_zipsplat_weights_with_config(
+    cfg: &ZipSplatBootstrapConfig,
+) -> Result<ZipSplatWeights, ModelBootstrapError> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = cfg;
+        Err(ModelBootstrapError::UnsupportedTarget)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        native::resolve_or_bootstrap_zipsplat_weights_native(cfg, None)
+    }
+}
+
+/// Resolves/cache-populates ZipSplat weights with config and native progress callbacks.
+pub fn resolve_or_bootstrap_zipsplat_weights_with_config_and_progress<F>(
+    cfg: &ZipSplatBootstrapConfig,
+    progress: F,
+) -> Result<ZipSplatWeights, ModelBootstrapError>
+where
+    F: Fn(String) + Send + Sync + 'static,
+{
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (cfg, progress);
+        Err(ModelBootstrapError::UnsupportedTarget)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        native::resolve_or_bootstrap_zipsplat_weights_native(cfg, Some(Arc::new(progress)))
+    }
+}
+
 /// Returns the default on-disk cache root for this crate.
 pub fn default_cache_root() -> Result<PathBuf, ModelBootstrapError> {
     #[cfg(target_arch = "wasm32")]
@@ -201,6 +335,8 @@ pub enum ModelBootstrapError {
         path: PathBuf,
         source: std::io::Error,
     },
+    #[error("failed to import model `{component}`: {message}")]
+    Import { component: String, message: String },
     #[error("download returned invalid content for `{url}`: {message}")]
     InvalidContent { url: String, message: String },
 }
@@ -213,19 +349,29 @@ mod native {
     use std::thread::sleep;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use super::{BootstrapProgressCallback, ModelBootstrapError, YonoBootstrapConfig};
+    use super::{
+        BootstrapProgressCallback, ModelBootstrapError, YonoBootstrapConfig,
+        ZipSplatBootstrapConfig,
+    };
+    use burn::prelude::Backend;
     use burn_yono::parts::{
         burnpack_parts_manifest_path, manifest_is_complete, read_parts_manifest,
         resolve_part_entry_path, BurnpackPartEntry,
     };
     use burn_yono::{YonoWeightFormat, YonoWeightPrecision, YonoWeights};
+    use burn_zipsplat::{
+        import::{load_zipsplat_from_pytorch, save_zipsplat_record_bpk},
+        ZipSplatConfig, ZipSplatWeightFormat, ZipSplatWeightPrecision, ZipSplatWeights,
+    };
 
     const CACHE_ROOT_DIR: &str = ".burn_reconstruction";
-    const CACHE_MODELS_SUBDIR: &str = "models/yono";
+    const YONO_CACHE_MODELS_SUBDIR: &str = "models/yono";
+    const ZIPSPLAT_CACHE_MODELS_SUBDIR: &str = "models/zipsplat";
     const DOWNLOAD_ATTEMPTS: u32 = 4;
     const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
     const READ_TIMEOUT: Duration = Duration::from_secs(60);
     const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
+    type ZipSplatImportBackend = burn::backend::NdArray<f32>;
 
     pub fn apply_env_overrides(mut cfg: YonoBootstrapConfig) -> YonoBootstrapConfig {
         if let Some(explicit) = std::env::var_os("BURN_RECONSTRUCTION_CACHE_DIR") {
@@ -250,6 +396,35 @@ mod native {
             if let Some(precision) = parse_precision(&value) {
                 cfg.burnpack_precision = precision;
             }
+        }
+        cfg
+    }
+
+    pub fn apply_zipsplat_env_overrides(
+        mut cfg: ZipSplatBootstrapConfig,
+    ) -> ZipSplatBootstrapConfig {
+        if let Some(explicit) = std::env::var_os("BURN_RECONSTRUCTION_CACHE_DIR") {
+            cfg.cache_root = Some(PathBuf::from(explicit).join("models/zipsplat"));
+        }
+        if let Some(explicit) = std::env::var_os("BURN_RECONSTRUCTION_ZIPSPLAT_CACHE_DIR") {
+            cfg.cache_root = Some(PathBuf::from(explicit));
+        }
+        if let Ok(value) = std::env::var("BURN_RECONSTRUCTION_ZIPSPLAT_CHECKPOINT_URL") {
+            cfg.checkpoint_url = value;
+        }
+        if let Ok(value) = std::env::var("BURN_RECONSTRUCTION_ZIPSPLAT_CHECKPOINT_FILE") {
+            cfg.checkpoint_file = value;
+        }
+        if let Ok(value) = std::env::var("BURN_RECONSTRUCTION_ZIPSPLAT_BURNPACK_FILE") {
+            cfg.burnpack_file = value;
+        }
+        if let Ok(value) = std::env::var("BURN_RECONSTRUCTION_ZIPSPLAT_BURNPACK_PRECISION") {
+            if let Some(precision) = parse_zipsplat_precision(&value) {
+                cfg.burnpack_precision = precision;
+            }
+        }
+        if let Ok(value) = std::env::var("BURN_RECONSTRUCTION_ZIPSPLAT_WRITE_PARTS") {
+            cfg.write_parts = parse_bool(&value).unwrap_or(cfg.write_parts);
         }
         cfg
     }
@@ -352,7 +527,150 @@ mod native {
         let Some(home) = user_home_dir() else {
             return Err(ModelBootstrapError::MissingHomeDir);
         };
-        Ok(home.join(CACHE_ROOT_DIR).join(CACHE_MODELS_SUBDIR))
+        Ok(home.join(CACHE_ROOT_DIR).join(YONO_CACHE_MODELS_SUBDIR))
+    }
+
+    pub fn resolve_or_bootstrap_zipsplat_weights_native(
+        cfg: &ZipSplatBootstrapConfig,
+        progress: Option<BootstrapProgressCallback>,
+    ) -> Result<ZipSplatWeights, ModelBootstrapError> {
+        let cache_root = zipsplat_cache_root_native(cfg)?;
+        emit_progress(
+            progress.as_ref(),
+            format!(
+                "resolving ZipSplat model cache under {}",
+                cache_root.to_string_lossy()
+            ),
+        );
+        fs::create_dir_all(&cache_root).map_err(|source| ModelBootstrapError::CreateDir {
+            path: cache_root.clone(),
+            source,
+        })?;
+
+        let burnpack_path = cache_root.join(cfg.burnpack_file.as_str());
+        let precision_path =
+            burn_zipsplat::burnpack_path_for_precision(&burnpack_path, cfg.burnpack_precision);
+        if precision_path.exists() {
+            emit_progress(
+                progress.as_ref(),
+                "using cached ZipSplat burnpack".to_string(),
+            );
+            return Ok(ZipSplatWeights::burnpack(burnpack_path)
+                .with_format(ZipSplatWeightFormat::Burnpack)
+                .with_precision(cfg.burnpack_precision));
+        }
+
+        let checkpoint_path = cache_root.join(cfg.checkpoint_file.as_str());
+        if checkpoint_path.exists() {
+            emit_progress(
+                progress.as_ref(),
+                "using cached ZipSplat PyTorch checkpoint".to_string(),
+            );
+        } else {
+            emit_progress(
+                progress.as_ref(),
+                "downloading official ZipSplat PyTorch checkpoint".to_string(),
+            );
+            ensure_file_cached(checkpoint_path.as_path(), cfg.checkpoint_url.as_str())?;
+        }
+
+        emit_progress(
+            progress.as_ref(),
+            "importing ZipSplat checkpoint into native Burn modules".to_string(),
+        );
+        let device = <ZipSplatImportBackend as Backend>::Device::default();
+        let (model, apply) = load_zipsplat_from_pytorch::<ZipSplatImportBackend>(
+            &device,
+            ZipSplatConfig::default(),
+            checkpoint_path.as_path(),
+        )
+        .map_err(|err| ModelBootstrapError::Import {
+            component: "zipsplat".to_string(),
+            message: err.to_string(),
+        })?;
+        if apply.applied.is_empty() {
+            return Err(ModelBootstrapError::Import {
+                component: "zipsplat".to_string(),
+                message: "checkpoint import applied zero tensors".to_string(),
+            });
+        }
+        if !apply.missing.is_empty() {
+            return Err(ModelBootstrapError::Import {
+                component: "zipsplat".to_string(),
+                message: format!("checkpoint import missing tensors: {:?}", apply.missing),
+            });
+        }
+
+        emit_progress(
+            progress.as_ref(),
+            "writing ZipSplat f32 burnpack".to_string(),
+        );
+        let f32_path =
+            save_zipsplat_record_bpk(&model, burnpack_path.as_path()).map_err(|err| {
+                ModelBootstrapError::Import {
+                    component: "zipsplat".to_string(),
+                    message: err.to_string(),
+                }
+            })?;
+
+        if cfg.write_parts && cfg.burnpack_precision == ZipSplatWeightPrecision::F32 {
+            write_zipsplat_parts(f32_path.as_path(), cfg, progress.clone())?;
+        }
+
+        if cfg.burnpack_precision == ZipSplatWeightPrecision::F16 {
+            emit_progress(
+                progress.as_ref(),
+                "writing ZipSplat f16 burnpack".to_string(),
+            );
+            let f16_path = burn_yono::import::convert_burnpack_to_f16(
+                f32_path.as_path(),
+                burnpack_path.as_path(),
+            )
+            .map_err(|err| ModelBootstrapError::Import {
+                component: "zipsplat".to_string(),
+                message: err.to_string(),
+            })?;
+            if cfg.write_parts {
+                write_zipsplat_parts(f16_path.as_path(), cfg, progress.clone())?;
+            }
+        }
+
+        Ok(ZipSplatWeights::burnpack(burnpack_path)
+            .with_format(ZipSplatWeightFormat::Burnpack)
+            .with_precision(cfg.burnpack_precision))
+    }
+
+    fn zipsplat_cache_root_native(
+        cfg: &ZipSplatBootstrapConfig,
+    ) -> Result<PathBuf, ModelBootstrapError> {
+        if let Some(explicit) = cfg.cache_root.as_ref() {
+            return Ok(explicit.clone());
+        }
+        let Some(home) = user_home_dir() else {
+            return Err(ModelBootstrapError::MissingHomeDir);
+        };
+        Ok(home.join(CACHE_ROOT_DIR).join(ZIPSPLAT_CACHE_MODELS_SUBDIR))
+    }
+
+    fn write_zipsplat_parts(
+        burnpack_path: &Path,
+        cfg: &ZipSplatBootstrapConfig,
+        progress: Option<BootstrapProgressCallback>,
+    ) -> Result<(), ModelBootstrapError> {
+        emit_progress(
+            progress.as_ref(),
+            format!(
+                "writing ZipSplat burnpack parts for {}",
+                burnpack_path.display()
+            ),
+        );
+        burn_yono::import::ensure_burnpack_parts(burnpack_path, cfg.parts_max_mib, false).map_err(
+            |err| ModelBootstrapError::Import {
+                component: "zipsplat".to_string(),
+                message: err.to_string(),
+            },
+        )?;
+        Ok(())
     }
 
     fn resolve_remote_urls(
@@ -864,6 +1182,14 @@ mod native {
         }
     }
 
+    fn parse_zipsplat_precision(value: &str) -> Option<ZipSplatWeightPrecision> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "f16" | "fp16" | "half" => Some(ZipSplatWeightPrecision::F16),
+            "f32" | "fp32" | "full" => Some(ZipSplatWeightPrecision::F32),
+            _ => None,
+        }
+    }
+
     fn user_home_dir() -> Option<PathBuf> {
         if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
             return Some(home);
@@ -905,6 +1231,7 @@ mod tests {
     use crate::bootstrap::{
         resolve_or_bootstrap_yono_weights,
         resolve_or_bootstrap_yono_weights_with_precision_and_progress,
+        resolve_or_bootstrap_zipsplat_weights_with_precision,
     };
 
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -974,6 +1301,46 @@ mod tests {
             base_url.trim_start_matches("http://").trim_end_matches('/'),
         );
         server.join().expect("server thread should exit cleanly");
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    #[test]
+    fn zipsplat_resolves_cached_native_burnpack_without_download() {
+        let _lock = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock should succeed");
+
+        let tmp = unique_tmp_dir();
+        let cache_root = tmp.join("cache");
+        let model_root = cache_root.join("models/zipsplat");
+        std::fs::create_dir_all(&model_root).expect("create zipsplat cache dir");
+        let f16 = model_root.join("zipsplat_f16.bpk");
+        std::fs::write(&f16, b"cached-zipsplat").expect("write cached f16 marker");
+
+        std::env::set_var("BURN_RECONSTRUCTION_CACHE_DIR", &cache_root);
+        let resolved = resolve_or_bootstrap_zipsplat_weights_with_precision(
+            burn_zipsplat::ZipSplatWeightPrecision::F16,
+        )
+        .expect("cached ZipSplat resolve should succeed");
+
+        assert_eq!(resolved.checkpoint, model_root.join("zipsplat.bpk"));
+        assert_eq!(
+            resolved.precision,
+            burn_zipsplat::ZipSplatWeightPrecision::F16
+        );
+        assert_eq!(
+            resolved.format,
+            burn_zipsplat::ZipSplatWeightFormat::Burnpack
+        );
+
+        std::env::remove_var("BURN_RECONSTRUCTION_CACHE_DIR");
+        std::env::remove_var("BURN_RECONSTRUCTION_ZIPSPLAT_CACHE_DIR");
+        std::env::remove_var("BURN_RECONSTRUCTION_ZIPSPLAT_CHECKPOINT_URL");
+        std::env::remove_var("BURN_RECONSTRUCTION_ZIPSPLAT_CHECKPOINT_FILE");
+        std::env::remove_var("BURN_RECONSTRUCTION_ZIPSPLAT_BURNPACK_FILE");
+        std::env::remove_var("BURN_RECONSTRUCTION_ZIPSPLAT_BURNPACK_PRECISION");
+        std::env::remove_var("BURN_RECONSTRUCTION_ZIPSPLAT_WRITE_PARTS");
         let _ = std::fs::remove_dir_all(tmp);
     }
 

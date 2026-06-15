@@ -26,16 +26,33 @@ Then open:
 
 This web entrypoint validates wasm startup and asset loading for the Bevy app shell.
 `infer.html` is a simplified non-Bevy inference page (file input -> wasm API -> GLB download).
-The web app now runs inference and, by default, pulls model parts from:
+The web app runs YoNoSplat inference and can run ZipSplat when native ZipSplat burnpack parts
+are hosted. By default it pulls model parts from:
 - `https://aberration.technology/model/yono`
+- `https://aberration.technology/model/zipsplat`
+
+ZipSplat expects `zipsplat_f16.bpk.parts.json` plus matching `*.bpk.part-*` files under the
+selected ZipSplat model root.
+
+Create those ZipSplat web assets with the native Rust importer:
+
+```bash
+cargo run -p burn_reconstruction --bin import -- \
+  --model zipsplat \
+  --zipsplat-weights ~/.burn_reconstruction/models/zipsplat/zipsplat-da3g-252p.tar \
+  --zipsplat-output ~/.burn_reconstruction/models/zipsplat/zipsplat \
+  --precision f16 \
+  --parts true
+```
 
 Override source at runtime (before wasm init) with browser globals:
 - `window.BURN_RECONSTRUCTION_MODEL_BASE_URL`
 - `window.BURN_RECONSTRUCTION_YONO_REMOTE_ROOT`
+- `window.BURN_RECONSTRUCTION_ZIPSPLAT_REMOTE_ROOT`
 
 ## optional model bundle copy
 
-If you want local model asset mirrors for service-worker caching, copy selected files into
+If you want local model asset mirrors for service-worker caching, copy selected YoNo files into
 `www/assets/model/yono` and demo startup images into `www/assets/images`:
 
 ```bash
@@ -56,6 +73,15 @@ Example startup URL (concise image args):
 ```text
 http://127.0.0.1:4173/index.html?image=re10k/0.png&image=re10k/1.png&image=re10k/2.png
 ```
+
+Model settings can also be provided as query params:
+
+```text
+http://127.0.0.1:4173/index.html?model=zipsplat&quality=compact&r=4&image=re10k/0.png&image=re10k/1.png
+```
+
+That URL selects ZipSplat, compact quality, and `r=4`; inference succeeds when the configured
+ZipSplat model root contains native web burnpack parts.
 
 `re10k/<n>.png` is resolved to `assets/images/re10k/<n>.png` in wasm startup logic.
 

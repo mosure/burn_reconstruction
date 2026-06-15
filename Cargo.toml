@@ -3,6 +3,7 @@ members = [
   "crates/bevy_reconstruction",
   "crates/burn_reconstruction",
   "crates/burn_yono",
+  "crates/burn_zipsplat",
   "crates/burn_reconstruction_zeroverse",
 ]
 resolver = "2"

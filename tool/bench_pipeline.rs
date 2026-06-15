@@ -8,9 +8,10 @@ use burn::prelude::*;
 use burn_reconstruction::{
     backend::default_device, ComponentLoadReport, ForwardTimings, ImageToGaussianPipeline,
     PipelineConfig, PipelineInputImage, PipelineModel, PipelineQuality, PipelineWeights,
-    YonoWeightFormat, YonoWeightPrecision,
+    YonoWeightFormat, YonoWeightPrecision, ZipSplatWeightFormat, ZipSplatWeightPrecision,
+    ZipSplatWeights,
 };
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, Parser, ValueEnum};
 
 type BackendImpl = burn_reconstruction::backend::BackendImpl;
 
@@ -35,16 +36,31 @@ struct DiffStats {
     max_abs: f32,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ModelArg {
+    Yono,
+    Zipsplat,
+}
+
 #[derive(Debug, Parser)]
 #[command(
     about = "Benchmark burn_reconstruction model init + inference scaling and validate determinism"
 )]
 struct Args {
-    #[arg(long, required = true, num_args = 2..)]
+    #[arg(long, required = true, num_args = 1..)]
     image: Vec<PathBuf>,
 
-    #[arg(long, default_value_t = 224)]
-    image_size: usize,
+    #[arg(long)]
+    image_size: Option<usize>,
+
+    #[arg(long, value_enum, default_value_t = ModelArg::Yono)]
+    model: ModelArg,
+
+    #[arg(long, default_value_t = PipelineQuality::Balanced.default_zipsplat_r())]
+    zipsplat_r: usize,
+
+    #[arg(long)]
+    zipsplat_weights: Option<PathBuf>,
 
     #[arg(long, default_value_t = 1)]
     warmup_iters: usize,
@@ -73,16 +89,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.bench_iters == 0 {
         return Err("--bench-iters must be > 0".into());
     }
-    if args.image_size % 14 != 0 {
-        return Err(format!(
-            "--image-size must be divisible by 14, got {}",
-            args.image_size
-        )
-        .into());
+    let model = match args.model {
+        ModelArg::Yono => PipelineModel::Yono,
+        ModelArg::Zipsplat => PipelineModel::ZipSplat,
+    };
+    let image_size = args
+        .image_size
+        .unwrap_or_else(|| model.capabilities().default_image_size);
+    if image_size % 14 != 0 {
+        return Err(format!("--image-size must be divisible by 14, got {}", image_size).into());
     }
-
+    let min_views = model.capabilities().min_views;
     let images = load_images(args.image.as_slice())?;
-    let selected_view_counts = resolve_view_counts(images.len(), args.view_counts.as_deref())?;
+    let selected_view_counts =
+        resolve_view_counts(images.len(), min_views, args.view_counts.as_deref())?;
     if selected_view_counts.is_empty() {
         return Err("no valid view counts selected".into());
     }
@@ -96,25 +116,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let bootstrap_start = Instant::now();
-    let weights = PipelineWeights::resolve_or_bootstrap_yono_with_precision(
-        YonoWeightFormat::Burnpack,
-        YonoWeightPrecision::F16,
-    )?;
+    let weights = match model {
+        PipelineModel::Yono => PipelineWeights::resolve_or_bootstrap_yono_with_precision(
+            YonoWeightFormat::Burnpack,
+            YonoWeightPrecision::F16,
+        )?,
+        PipelineModel::ZipSplat => {
+            if let Some(path) = args.zipsplat_weights.clone() {
+                PipelineWeights::from_zipsplat(
+                    ZipSplatWeights::new(path)
+                        .with_format(ZipSplatWeightFormat::Burnpack)
+                        .with_precision(ZipSplatWeightPrecision::F16),
+                )
+            } else {
+                PipelineWeights::resolve_or_bootstrap_zipsplat_with_precision(
+                    ZipSplatWeightPrecision::F16,
+                )?
+            }
+        }
+    };
     let bootstrap_elapsed = bootstrap_start.elapsed();
     println!(
-        "[bench] bootstrap_ms={:.2} backbone={} head={}",
+        "[bench] model={} zipsplat_r={} bootstrap_ms={:.2} backbone={} head={}",
+        model.display_name(),
+        args.zipsplat_r,
         bootstrap_elapsed.as_secs_f64() * 1000.0,
-        weights.yono.backbone.display(),
-        weights.yono.head.display()
+        weights
+            .yono()
+            .map(|weights| weights.backbone.display().to_string())
+            .unwrap_or_else(|| "<not-yono>".to_string()),
+        weights
+            .yono()
+            .map(|weights| weights.head.display().to_string())
+            .unwrap_or_else(|| "<not-yono>".to_string())
     );
 
     let load_start = Instant::now();
     let (pipeline, load_report) = ImageToGaussianPipeline::load(
         default_device(),
         PipelineConfig {
-            model: PipelineModel::Yono,
+            model,
             quality: PipelineQuality::Balanced,
-            image_size: args.image_size,
+            image_size,
+            zipsplat_r: args.zipsplat_r,
         },
         weights,
     )?;
@@ -127,7 +171,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     println!(
-        "[bench] view_count,image_load_ms,backbone_ms,head_ms,forward_ms,wall_ms,wall_per_view_ms,wall_per_view_sq_ms,total_gaussians"
+        "[bench] model,view_count,image_load_ms,backbone_ms,head_ms,forward_ms,wall_ms,wall_per_view_ms,wall_per_view_sq_ms,total_gaussians"
     );
     let mut last_wall_ms: Option<f64> = None;
     let mut last_views: Option<usize> = None;
@@ -158,7 +202,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let wall_per_view_ms = wall_ms / views as f64;
         let wall_per_view_sq_ms = wall_ms / (views * views) as f64;
         println!(
-            "[bench] {views},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{}",
+            "[bench] {},{views},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{}",
+            model.id(),
             avg.image_load.as_secs_f64() * 1000.0,
             avg.backbone.as_secs_f64() * 1000.0,
             avg.head.as_secs_f64() * 1000.0,
@@ -252,18 +297,21 @@ fn image_name(path: &Path) -> String {
 
 fn resolve_view_counts(
     total_images: usize,
+    min_views: usize,
     requested: Option<&[usize]>,
 ) -> Result<Vec<usize>, String> {
-    if total_images < 2 {
-        return Err(format!("expected at least 2 images, got {total_images}"));
+    if total_images < min_views {
+        return Err(format!(
+            "expected at least {min_views} images, got {total_images}"
+        ));
     }
     let mut counts = match requested {
         Some(values) => values.to_vec(),
-        None => (2..=total_images).collect(),
+        None => (min_views..=total_images).collect(),
     };
     counts.sort_unstable();
     counts.dedup();
-    counts.retain(|count| *count >= 2 && *count <= total_images);
+    counts.retain(|count| *count >= min_views && *count <= total_images);
     Ok(counts)
 }
 

@@ -38,13 +38,13 @@ use burn_reconstruction::pack_gaussian_rows_full_async;
 #[cfg(test)]
 use burn_reconstruction::sanitize_scale_for_viewer;
 use burn_reconstruction::PipelineInputImage;
-use burn_reconstruction::{GlbExportOptions, GlbSortMode, PipelineGaussians};
-#[cfg(target_arch = "wasm32")]
-use burn_reconstruction::{ImageToGaussianPipeline, PipelineConfig};
+use burn_reconstruction::{
+    GlbExportOptions, GlbSortMode, ImageToGaussianPipeline, PipelineConfig, PipelineGaussians,
+    PipelineModel, PipelineQuality, ZipSplatCompression, ZipSplatConfig,
+};
 #[cfg(not(target_arch = "wasm32"))]
 use burn_reconstruction::{
-    ImageToGaussianPipeline, PipelineConfig, PipelineQuality, PipelineWeights, YonoWeightFormat,
-    YonoWeightPrecision,
+    PipelineWeights, YonoWeightFormat, YonoWeightPrecision, ZipSplatWeightPrecision,
 };
 
 use bevy_gaussian_splatting::{
@@ -78,9 +78,12 @@ const PANEL_BORDER: Color = Color::srgb(0.13, 0.14, 0.18);
 const BUTTON_BG: Color = Color::srgb(0.1, 0.11, 0.14);
 const BUTTON_BG_HOVER: Color = Color::srgb(0.13, 0.14, 0.18);
 const BUTTON_BG_PRESSED: Color = Color::srgb(0.17, 0.19, 0.24);
+const BUTTON_BG_ACTIVE: Color = Color::srgb(0.18, 0.28, 0.42);
+const BUTTON_BG_ACTIVE_HOVER: Color = Color::srgb(0.22, 0.34, 0.52);
 const BUTTON_BORDER: Color = Color::srgb(0.28, 0.3, 0.35);
 const BUTTON_BORDER_HOVER: Color = Color::srgb(0.36, 0.4, 0.5);
 const BUTTON_BORDER_PRESSED: Color = Color::srgb(0.46, 0.52, 0.64);
+const BUTTON_BORDER_ACTIVE: Color = Color::srgb(0.42, 0.62, 0.86);
 const BUTTON_BG_DISABLED: Color = Color::srgb(0.08, 0.09, 0.11);
 const BUTTON_BORDER_DISABLED: Color = Color::srgb(0.2, 0.22, 0.26);
 const BUTTON_TEXT: Color = Color::srgb(0.86, 0.88, 0.94);
@@ -112,11 +115,11 @@ const FRUSTUM_FAR_HALF_RATIO: f32 = FRUSTUM_DEFAULT_FAR_HALF_BASE / FRUSTUM_DEFA
 #[cfg(target_arch = "wasm32")]
 const WASM_DEFAULT_MODEL_BASE_URL: &str = "https://aberration.technology/model";
 #[cfg(target_arch = "wasm32")]
-const WASM_DEFAULT_MODEL_REMOTE_ROOT: &str = "yono";
-#[cfg(target_arch = "wasm32")]
 const WASM_BACKBONE_BURNPACK_FILE: &str = "yono_backbone_f16.bpk";
 #[cfg(target_arch = "wasm32")]
 const WASM_HEAD_BURNPACK_FILE: &str = "yono_head_f16.bpk";
+#[cfg(target_arch = "wasm32")]
+const WASM_ZIPSPLAT_BURNPACK_FILE: &str = "zipsplat_f16.bpk";
 
 #[derive(Debug)]
 struct ImageSelectionDialog;
@@ -140,6 +143,95 @@ struct UiState {
     queued_run: bool,
     active_cloud: Option<Entity>,
     active_scene_bounds: Option<SceneBounds>,
+    output_stale: bool,
+}
+
+#[derive(Resource, Debug, Clone, Copy, Eq, PartialEq)]
+struct ModelSettings {
+    model: PipelineModel,
+    quality: PipelineQuality,
+    zipsplat_r: usize,
+}
+
+impl Default for ModelSettings {
+    fn default() -> Self {
+        Self {
+            model: PipelineModel::Yono,
+            quality: PipelineQuality::Balanced,
+            zipsplat_r: PipelineQuality::Balanced.default_zipsplat_r(),
+        }
+    }
+}
+
+impl ModelSettings {
+    fn pipeline_config(self) -> PipelineConfig {
+        PipelineConfig {
+            model: self.model,
+            quality: self.quality,
+            image_size: self.model.capabilities().default_image_size,
+            zipsplat_r: self.zipsplat_r,
+        }
+    }
+
+    fn quality_label(self) -> &'static str {
+        match self.quality {
+            PipelineQuality::Fast => "fast",
+            PipelineQuality::Full => "full",
+            PipelineQuality::Balanced => "balanced",
+            PipelineQuality::Compact => "compact",
+            PipelineQuality::Preview => "preview",
+            PipelineQuality::High => "high",
+        }
+    }
+
+    fn run_label(self) -> &'static str {
+        match self.model {
+            PipelineModel::Yono => "Run YoNoSplat",
+            PipelineModel::ZipSplat => "Run ZipSplat",
+        }
+    }
+
+    fn model_detail(self) -> String {
+        match self.model {
+            PipelineModel::Yono => {
+                "YoNoSplat uses a fixed pretrained reconstruction model. The detail preset only controls exported/viewed gaussian filtering.".to_string()
+            }
+            PipelineModel::ZipSplat => format!(
+                "ZipSplat uses compression r={}; higher r emits fewer gaussians before export filtering.",
+                self.zipsplat_r
+            ),
+        }
+    }
+
+    fn summary(self, image_count: usize) -> String {
+        let images = match image_count {
+            0 => "no images".to_string(),
+            1 => "1 image".to_string(),
+            count => format!("{count} images"),
+        };
+        match self.model {
+            PipelineModel::Yono => format!(
+                "Ready: YoNoSplat • {} detail • {images}",
+                self.quality_label()
+            ),
+            PipelineModel::ZipSplat => {
+                if image_count == 0 {
+                    return format!(
+                        "Ready: ZipSplat • {} detail • r={} • {images}",
+                        self.quality_label(),
+                        self.zipsplat_r,
+                    );
+                }
+                let gaussians = estimate_zipsplat_gaussians(image_count, self);
+                format!(
+                    "Ready: ZipSplat • {} detail • r={} • {images} • ~{} gaussians",
+                    self.quality_label(),
+                    self.zipsplat_r,
+                    gaussians
+                )
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -155,6 +247,7 @@ struct LaunchOptions {
     auto_run: bool,
     output_glb: Option<PathBuf>,
     exit_after_run: bool,
+    model_settings: ModelSettings,
     #[cfg(not(target_arch = "wasm32"))]
     print_help: bool,
     #[cfg(not(target_arch = "wasm32"))]
@@ -184,6 +277,7 @@ enum NativeWorkerCommand {
 struct NativeRunRequest {
     images: Vec<LoadedImage>,
     output_glb: Option<PathBuf>,
+    config: PipelineConfig,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -195,6 +289,7 @@ enum NativeWorkerEvent {
 
 #[cfg(not(target_arch = "wasm32"))]
 struct NativeRunResult {
+    config: PipelineConfig,
     cloud: PlanarGaussian3d,
     selected_gaussians: usize,
     total_gaussians: usize,
@@ -226,10 +321,12 @@ struct WasmStartupImages {
 #[derive(Debug, Clone)]
 struct WasmRunRequest {
     images: Vec<LoadedImage>,
+    config: PipelineConfig,
 }
 
 #[cfg(target_arch = "wasm32")]
 struct WasmRunResult {
+    config: PipelineConfig,
     cloud: PlanarGaussian3d,
     selected_gaussians: usize,
     total_gaussians: usize,
@@ -262,7 +359,33 @@ struct SelectImagesButton;
 struct RunInferenceButton;
 
 #[derive(Component)]
+struct RunButtonLabel;
+
+#[derive(Component)]
 struct ClearImagesButton;
+
+#[derive(Component, Clone, Copy)]
+struct ModelSelectButton(PipelineModel);
+
+#[derive(Component, Clone, Copy)]
+struct QualitySelectButton(PipelineQuality);
+
+#[derive(Component, Clone, Copy)]
+struct ZipSplatRAdjustButton {
+    delta: isize,
+}
+
+#[derive(Component)]
+struct ZipSplatRLabel;
+
+#[derive(Component)]
+struct ZipSplatSettingsRoot;
+
+#[derive(Component)]
+struct ModelDetailLabel;
+
+#[derive(Component)]
+struct ConfigSummaryLabel;
 
 #[derive(Component)]
 struct MainOrbitCamera;
@@ -308,6 +431,9 @@ type ControlButtonVisualQuery<'a> = (
     &'a ControlButton,
     Option<&'a RunInferenceButton>,
     Option<&'a ClearImagesButton>,
+    Option<&'a ModelSelectButton>,
+    Option<&'a QualitySelectButton>,
+    Option<&'a ZipSplatRAdjustButton>,
     &'a Children,
     &'a mut BackgroundColor,
     &'a mut BorderColor,
@@ -354,10 +480,12 @@ pub fn run() {
     );
 
     let mut app = App::new();
+    let model_settings = initial_model_settings_from_env(&launch_options);
     app.insert_resource(UiState {
         status: "select at least two images of one static scene".to_string(),
         ..UiState::default()
     });
+    app.insert_resource(model_settings);
     app.insert_resource(launch_options);
     app.insert_resource(FrustumDebug::default());
     #[cfg(not(target_arch = "wasm32"))]
@@ -416,6 +544,11 @@ pub fn run() {
             rebuild_staging_list,
             update_status_label,
             update_selection_label,
+            update_config_summary_label,
+            update_model_detail_label,
+            update_run_button_label,
+            update_zipsplat_r_label,
+            update_model_specific_visibility,
             update_status_badge,
             update_control_button_visuals,
             update_staging_button_visuals,
@@ -568,10 +701,11 @@ fn setup_ui(mut commands: Commands) {
                     ))
                     .with_children(|button| {
                         button.spawn((
-                            Text::new("run"),
+                            Text::new("Run YoNoSplat"),
                             TextFont::from_font_size(13.0),
                             TextColor(BUTTON_TEXT),
                             ButtonLabel,
+                            RunButtonLabel,
                         ));
                     });
 
@@ -683,6 +817,151 @@ fn setup_ui(mut commands: Commands) {
                         SelectionLabel,
                     ));
 
+                    panel.spawn((
+                        Text::new("Ready: YoNoSplat • balanced detail • no images"),
+                        TextFont::from_font_size(12.0),
+                        TextColor(Color::srgb(0.72, 0.78, 0.88)),
+                        ConfigSummaryLabel,
+                    ));
+
+                    panel.spawn((
+                        Text::new("model"),
+                        TextFont::from_font_size(13.0),
+                        TextColor(Color::srgb(0.82, 0.86, 0.94)),
+                    ));
+
+                    panel
+                        .spawn(Node {
+                            flex_direction: FlexDirection::Row,
+                            column_gap: Val::Px(0.0),
+                            ..Node::default()
+                        })
+                        .with_children(|row| {
+                            for (model, label) in [
+                                (PipelineModel::Yono, "YoNoSplat"),
+                                (PipelineModel::ZipSplat, "ZipSplat"),
+                            ] {
+                                row.spawn((
+                                    Button,
+                                    ModelSelectButton(model),
+                                    ControlButton(ControlButtonKind::Primary),
+                                    Node {
+                                        min_width: Val::Px(106.0),
+                                        justify_content: JustifyContent::Center,
+                                        padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
+                                        border: UiRect::all(Val::Px(1.0)),
+                                        ..Node::default()
+                                    },
+                                    BorderColor::all(BUTTON_BORDER),
+                                    BackgroundColor(BUTTON_BG),
+                                    BorderRadius::all(Val::Px(7.0)),
+                                ))
+                                .with_children(|button| {
+                                    button.spawn((
+                                        Text::new(label),
+                                        TextFont::from_font_size(12.0),
+                                        TextColor(BUTTON_TEXT),
+                                        ButtonLabel,
+                                    ));
+                                });
+                            }
+                        });
+
+                    panel.spawn((
+                        Text::new("YoNoSplat uses a fixed pretrained reconstruction model. The detail preset only controls exported/viewed gaussian filtering."),
+                        TextFont::from_font_size(12.0),
+                        TextColor(Color::srgb(0.68, 0.73, 0.82)),
+                        ModelDetailLabel,
+                    ));
+
+                    panel.spawn((
+                        Text::new("output detail"),
+                        TextFont::from_font_size(13.0),
+                        TextColor(Color::srgb(0.82, 0.86, 0.94)),
+                    ));
+
+                    panel
+                        .spawn(Node {
+                            flex_direction: FlexDirection::Row,
+                            flex_wrap: FlexWrap::Wrap,
+                            column_gap: Val::Px(8.0),
+                            row_gap: Val::Px(8.0),
+                            ..Node::default()
+                        })
+                        .with_children(|row| {
+                            for (quality, label) in [
+                                (PipelineQuality::Full, "full"),
+                                (PipelineQuality::Balanced, "balanced"),
+                                (PipelineQuality::Compact, "compact"),
+                                (PipelineQuality::Preview, "preview"),
+                            ] {
+                                row.spawn((
+                                    Button,
+                                    QualitySelectButton(quality),
+                                    ControlButton(ControlButtonKind::Primary),
+                                    Node {
+                                        padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
+                                        border: UiRect::all(Val::Px(1.0)),
+                                        ..Node::default()
+                                    },
+                                    BorderColor::all(BUTTON_BORDER),
+                                    BackgroundColor(BUTTON_BG),
+                                    BorderRadius::all(Val::Px(7.0)),
+                                ))
+                                .with_children(|button| {
+                                    button.spawn((
+                                        Text::new(label),
+                                        TextFont::from_font_size(12.0),
+                                        TextColor(BUTTON_TEXT),
+                                        ButtonLabel,
+                                    ));
+                                });
+                            }
+                        });
+
+                    panel
+                        .spawn((
+                            Node {
+                                flex_direction: FlexDirection::Row,
+                                align_items: AlignItems::Center,
+                                column_gap: Val::Px(8.0),
+                                ..Node::default()
+                            },
+                            ZipSplatSettingsRoot,
+                            Visibility::Hidden,
+                        ))
+                        .with_children(|row| {
+                            row.spawn((
+                                Text::new("ZipSplat r=2"),
+                                TextFont::from_font_size(12.0),
+                                TextColor(Color::srgb(0.78, 0.82, 0.9)),
+                                ZipSplatRLabel,
+                            ));
+                            for (delta, label) in [(-1, "r-"), (1, "r+")] {
+                                row.spawn((
+                                    Button,
+                                    ZipSplatRAdjustButton { delta },
+                                    ControlButton(ControlButtonKind::Primary),
+                                    Node {
+                                        padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
+                                        border: UiRect::all(Val::Px(1.0)),
+                                        ..Node::default()
+                                    },
+                                    BorderColor::all(BUTTON_BORDER),
+                                    BackgroundColor(BUTTON_BG),
+                                    BorderRadius::all(Val::Px(7.0)),
+                                ))
+                                .with_children(|button| {
+                                    button.spawn((
+                                        Text::new(label),
+                                        TextFont::from_font_size(12.0),
+                                        TextColor(BUTTON_TEXT),
+                                        ButtonLabel,
+                                    ));
+                                });
+                            }
+                        });
+
                     panel
                         .spawn((
                             Node {
@@ -758,26 +1037,46 @@ fn send_worker_status(event_tx: &Sender<NativeWorkerEvent>, status: impl Into<St
 #[cfg(not(target_arch = "wasm32"))]
 fn native_load_pipeline(
     event_tx: &Sender<NativeWorkerEvent>,
+    cfg: PipelineConfig,
 ) -> Result<ImageToGaussianPipeline, String> {
     let start = Instant::now();
-    log::info!("bevy_reconstruction: resolving model weights...");
-    send_worker_status(event_tx, "resolving model files (cache + remote)...");
+    let model_name = cfg.model.display_name();
+    log::info!(
+        "bevy_reconstruction: resolving {} model weights...",
+        model_name
+    );
+    send_worker_status(
+        event_tx,
+        format!("resolving {} model files (cache + remote)...", model_name),
+    );
 
-    let cfg = PipelineConfig {
-        quality: PipelineQuality::Balanced,
-        ..PipelineConfig::default()
+    let weights = match cfg.model {
+        PipelineModel::Yono => {
+            let progress_tx = event_tx.clone();
+            PipelineWeights::resolve_or_bootstrap_yono_with_precision_and_progress(
+                YonoWeightFormat::Burnpack,
+                YonoWeightPrecision::F16,
+                move |status| {
+                    let _ = progress_tx.send(NativeWorkerEvent::Status(status));
+                },
+            )
+            .map_err(|err| format!("failed to resolve model weights: {err}"))?
+        }
+        PipelineModel::ZipSplat => {
+            let progress_tx = event_tx.clone();
+            PipelineWeights::resolve_or_bootstrap_zipsplat_with_precision_and_progress(
+                ZipSplatWeightPrecision::F16,
+                move |status| {
+                    let _ = progress_tx.send(NativeWorkerEvent::Status(status));
+                },
+            )
+            .map_err(|err| format!("failed to resolve model weights: {err}"))?
+        }
     };
-
-    let progress_tx = event_tx.clone();
-    let weights = PipelineWeights::resolve_or_bootstrap_yono_with_precision_and_progress(
-        YonoWeightFormat::Burnpack,
-        YonoWeightPrecision::F16,
-        move |status| {
-            let _ = progress_tx.send(NativeWorkerEvent::Status(status));
-        },
-    )
-    .map_err(|err| format!("failed to resolve model weights: {err}"))?;
-    send_worker_status(event_tx, "initializing yono pipeline modules...");
+    send_worker_status(
+        event_tx,
+        format!("initializing {model_name} pipeline modules..."),
+    );
     log::info!(
         "bevy_reconstruction: model weights resolved in {:.2}s; initializing pipeline...",
         start.elapsed().as_secs_f64()
@@ -789,7 +1088,10 @@ fn native_load_pipeline(
             let _ = progress_tx.send(NativeWorkerEvent::Status(status));
         })
         .map_err(|err| format!("failed to initialize inference pipeline: {err}"))?;
-    send_worker_status(event_tx, "yono modules initialized; preparing inference...");
+    send_worker_status(
+        event_tx,
+        format!("{model_name} modules initialized; preparing inference..."),
+    );
     log::info!(
         "bevy_reconstruction: model initialized in {:.2}s total",
         start.elapsed().as_secs_f64()
@@ -817,8 +1119,9 @@ fn native_run_request(
         })
         .collect::<Vec<_>>();
 
+    let synchronize_forward = request.config.model != PipelineModel::ZipSplat;
     let run_output = pipeline
-        .run_image_bytes_timed_with_cameras(inputs.as_slice(), true)
+        .run_image_bytes_timed_with_cameras(inputs.as_slice(), synchronize_forward)
         .map_err(|err| format!("inference failed: {err}"))?;
 
     log::info!(
@@ -875,6 +1178,7 @@ fn native_run_request(
         .collect::<Vec<_>>();
 
     Ok(NativeRunResult {
+        config: request.config.clone(),
         cloud: cloud_build.cloud,
         selected_gaussians: cloud_build.selected_gaussians,
         total_gaussians,
@@ -889,16 +1193,26 @@ fn native_worker_loop(
     command_rx: Receiver<NativeWorkerCommand>,
     event_tx: Sender<NativeWorkerEvent>,
 ) {
-    let mut pipeline: Option<ImageToGaussianPipeline> = None;
+    let mut pipeline: Option<(PipelineConfig, ImageToGaussianPipeline)> = None;
 
     while let Ok(command) = command_rx.recv() {
         match command {
             NativeWorkerCommand::Run(request) => {
-                if pipeline.is_none() {
-                    send_worker_status(&event_tx, "loading model weights...");
-                    match native_load_pipeline(&event_tx) {
+                let needs_load = pipeline
+                    .as_ref()
+                    .map(|(cfg, _)| cfg != &request.config)
+                    .unwrap_or(true);
+                if needs_load {
+                    send_worker_status(
+                        &event_tx,
+                        format!(
+                            "loading {} model weights...",
+                            request.config.model.display_name()
+                        ),
+                    );
+                    match native_load_pipeline(&event_tx, request.config.clone()) {
                         Ok(loaded) => {
-                            pipeline = Some(loaded);
+                            pipeline = Some((request.config.clone(), loaded));
                         }
                         Err(err) => {
                             let _ = event_tx.send(NativeWorkerEvent::Failed(err));
@@ -914,6 +1228,7 @@ fn native_worker_loop(
 
                 let result = pipeline
                     .as_ref()
+                    .map(|(_, pipeline)| pipeline)
                     .ok_or_else(|| "pipeline not available".to_string())
                     .and_then(|pipeline| native_run_request(pipeline, &request));
 
@@ -930,14 +1245,18 @@ fn native_worker_loop(
     }
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn handle_ui_buttons(
     mut commands: Commands,
     select_interactions: Query<&Interaction, (With<Button>, With<SelectImagesButton>)>,
     run_interactions: Query<&Interaction, (With<Button>, With<RunInferenceButton>)>,
     clear_interactions: Query<&Interaction, (With<Button>, With<ClearImagesButton>)>,
+    model_interactions: Query<(&Interaction, &ModelSelectButton), With<Button>>,
+    quality_interactions: Query<(&Interaction, &QualitySelectButton), With<Button>>,
+    r_interactions: Query<(&Interaction, &ZipSplatRAdjustButton), With<Button>>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     mut ui: ResMut<UiState>,
+    mut settings: ResMut<ModelSettings>,
     mut frustums: ResMut<FrustumDebug>,
 ) {
     let just_pressed_left = mouse_buttons.just_pressed(MouseButton::Left);
@@ -962,6 +1281,46 @@ fn handle_ui_buttons(
         }
         ui.queued_run = true;
         log::info!("bevy_reconstruction: run requested via UI.");
+        ui.status = format!(
+            "queued {} reconstruction for {} images...",
+            settings.model.display_name(),
+            ui.selected_images.len()
+        );
+    }
+
+    for (interaction, button) in model_interactions.iter() {
+        if !ui_button_activated(*interaction, just_pressed_left, just_released_left) {
+            continue;
+        }
+        if settings.model != button.0 {
+            settings.model = button.0;
+            mark_settings_changed(ui.as_mut(), *settings);
+        }
+    }
+
+    for (interaction, button) in quality_interactions.iter() {
+        if !ui_button_activated(*interaction, just_pressed_left, just_released_left) {
+            continue;
+        }
+        settings.quality = button.0;
+        if settings.model == PipelineModel::ZipSplat {
+            settings.zipsplat_r = button.0.default_zipsplat_r();
+        }
+        mark_settings_changed(ui.as_mut(), *settings);
+    }
+
+    for (interaction, button) in r_interactions.iter() {
+        if !ui_button_activated(*interaction, just_pressed_left, just_released_left) {
+            continue;
+        }
+        if settings.model != PipelineModel::ZipSplat {
+            ui.status = "Select ZipSplat to edit compression r.".to_string();
+            continue;
+        }
+        let current = settings.zipsplat_r as isize;
+        let next = ZipSplatCompression::new((current + button.delta).max(1) as usize).get();
+        settings.zipsplat_r = next;
+        mark_settings_changed(ui.as_mut(), *settings);
     }
 
     for interaction in clear_interactions.iter() {
@@ -984,6 +1343,7 @@ fn handle_ui_buttons(
         ui.staging_revision = ui.staging_revision.wrapping_add(1);
         ui.queued_run = false;
         ui.active_scene_bounds = None;
+        ui.output_stale = false;
         frustums.poses_world_from_camera.clear();
 
         if had_staged_images || had_frustums || cleared_cloud.is_some() {
@@ -1345,6 +1705,7 @@ fn queue_native_inference_if_requested(
     mut ui: ResMut<UiState>,
     mut worker: ResMut<NativeInferenceWorker>,
     launch: Res<LaunchOptions>,
+    settings: Res<ModelSettings>,
     mut exit: MessageWriter<AppExit>,
 ) {
     if !ui.queued_run {
@@ -1368,6 +1729,7 @@ fn queue_native_inference_if_requested(
     let request = NativeRunRequest {
         images: ui.selected_images.clone(),
         output_glb: launch.output_glb.clone(),
+        config: settings.pipeline_config(),
     };
     if worker
         .command_tx
@@ -1383,7 +1745,8 @@ fn queue_native_inference_if_requested(
 
     worker.run_in_flight = true;
     ui.status = format!(
-        "queued reconstruction for {} images...",
+        "queued {} reconstruction for {} images...",
+        settings.model.display_name(),
         ui.selected_images.len()
     );
 }
@@ -1426,8 +1789,10 @@ fn poll_native_worker_events(
                     }
                 }
                 worker.run_in_flight = false;
+                ui.output_stale = false;
 
                 ui.status = format_inference_complete_status(
+                    done.config.model,
                     &done.timings,
                     done.selected_gaussians,
                     done.total_gaussians,
@@ -1458,6 +1823,7 @@ fn poll_native_worker_events(
 fn queue_wasm_inference_if_requested(
     mut ui: ResMut<UiState>,
     mut runtime: NonSendMut<WasmInferenceRuntime>,
+    settings: Res<ModelSettings>,
 ) {
     if !ui.queued_run {
         return;
@@ -1468,19 +1834,37 @@ fn queue_wasm_inference_if_requested(
         return;
     }
     runtime.run_requested = true;
+    let config = settings.pipeline_config();
     runtime.pending_run = Some(WasmRunRequest {
         images: ui.selected_images.clone(),
+        config: config.clone(),
     });
 
+    if runtime
+        .pipeline
+        .as_ref()
+        .map(|pipeline| pipeline.config() != &config)
+        .unwrap_or(false)
+    {
+        runtime.pipeline = None;
+    }
+
     if runtime.model_load_task.is_some() {
-        ui.status = "loading model weights; reconstruction queued...".to_string();
+        ui.status = format!(
+            "loading {} weights; reconstruction queued...",
+            config.model.display_name()
+        );
         return;
     }
     if runtime.pipeline.is_none() {
-        ui.status = "loading model weights; reconstruction queued...".to_string();
+        ui.status = format!(
+            "loading {} weights; reconstruction queued...",
+            config.model.display_name()
+        );
         let progress = runtime.progress.clone();
         runtime.model_load_task = Some(
-            AsyncComputeTaskPool::get().spawn_local(async { wasm_load_pipeline(progress).await }),
+            AsyncComputeTaskPool::get()
+                .spawn_local(async move { wasm_load_pipeline(config, progress).await }),
         );
         return;
     }
@@ -1615,7 +1999,9 @@ fn poll_wasm_inference_worker(
                             ui.pending_camera_focus_index = Some(index);
                         }
                     }
+                    ui.output_stale = false;
                     ui.status = format_inference_complete_status(
+                        done.config.model,
                         &done.timings,
                         done.selected_gaussians,
                         done.total_gaussians,
@@ -1669,8 +2055,16 @@ fn start_wasm_run_if_ready(ui: &mut UiState, runtime: &mut WasmInferenceRuntime)
         return;
     }
     if runtime.pending_run.is_none() && runtime.run_requested && ui.selected_images.len() >= 2 {
+        let Some(config) = runtime
+            .pipeline
+            .as_ref()
+            .map(|pipeline| pipeline.config().clone())
+        else {
+            return;
+        };
         runtime.pending_run = Some(WasmRunRequest {
             images: ui.selected_images.clone(),
+            config,
         });
     }
 
@@ -1683,7 +2077,10 @@ fn start_wasm_run_if_ready(ui: &mut UiState, runtime: &mut WasmInferenceRuntime)
     };
     runtime.run_requested = false;
     let image_count = request.images.len();
-    ui.status = format!("running inference on {image_count} images...");
+    ui.status = format!(
+        "running {} inference on {image_count} images...",
+        request.config.model.display_name()
+    );
     runtime.run_task = Some(AsyncComputeTaskPool::get().spawn_local(async move {
         let result = wasm_run_request(&pipeline, &request).await;
         (pipeline, result)
@@ -1691,8 +2088,11 @@ fn start_wasm_run_if_ready(ui: &mut UiState, runtime: &mut WasmInferenceRuntime)
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn wasm_load_pipeline(progress: WasmProgress) -> Result<ImageToGaussianPipeline, String> {
-    let model_root = wasm_model_root_url()?;
+async fn wasm_load_pipeline(
+    cfg: PipelineConfig,
+    progress: WasmProgress,
+) -> Result<ImageToGaussianPipeline, String> {
+    let model_root = wasm_model_root_url(cfg.model)?;
     set_wasm_model_progress(
         &progress,
         format!("resolving wasm model files from {model_root}"),
@@ -1702,23 +2102,42 @@ async fn wasm_load_pipeline(progress: WasmProgress) -> Result<ImageToGaussianPip
         model_root
     );
 
-    let backbone_url = join_url(model_root.as_str(), WASM_BACKBONE_BURNPACK_FILE);
-    let head_url = join_url(model_root.as_str(), WASM_HEAD_BURNPACK_FILE);
-    let backbone_parts = fetch_parts_bundle(backbone_url.as_str(), "backbone", &progress).await?;
-    let head_parts = fetch_parts_bundle(head_url.as_str(), "head", &progress).await?;
-
-    set_wasm_model_progress(&progress, "initializing yono pipeline modules...");
-    let cfg = PipelineConfig::default();
+    set_wasm_model_progress(
+        &progress,
+        format!(
+            "initializing {} pipeline modules...",
+            cfg.model.display_name()
+        ),
+    );
     let device = default_device();
     ensure_wasm_wgpu_runtime(&device).await;
     let progress_for_load = progress.clone();
-    let (pipeline, load_report) = ImageToGaussianPipeline::load_from_yono_parts_with_progress(
-        device,
-        cfg,
-        backbone_parts.as_slice(),
-        head_parts.as_slice(),
-        move |status| set_wasm_model_progress(&progress_for_load, status),
-    )
+    let (pipeline, load_report) = match cfg.model {
+        PipelineModel::Yono => {
+            let backbone_url = join_url(model_root.as_str(), WASM_BACKBONE_BURNPACK_FILE);
+            let head_url = join_url(model_root.as_str(), WASM_HEAD_BURNPACK_FILE);
+            let backbone_parts =
+                fetch_parts_bundle(backbone_url.as_str(), "backbone", &progress).await?;
+            let head_parts = fetch_parts_bundle(head_url.as_str(), "head", &progress).await?;
+            ImageToGaussianPipeline::load_from_yono_parts_with_progress(
+                device,
+                cfg,
+                backbone_parts.as_slice(),
+                head_parts.as_slice(),
+                move |status| set_wasm_model_progress(&progress_for_load, status),
+            )
+        }
+        PipelineModel::ZipSplat => {
+            let model_url = join_url(model_root.as_str(), WASM_ZIPSPLAT_BURNPACK_FILE);
+            let model_parts = fetch_parts_bundle(model_url.as_str(), "zipsplat", &progress).await?;
+            ImageToGaussianPipeline::load_from_zipsplat_parts_with_progress(
+                device,
+                cfg,
+                model_parts.as_slice(),
+                move |status| set_wasm_model_progress(&progress_for_load, status),
+            )
+        }
+    }
     .map_err(|err| format!("failed to initialize wasm inference pipeline: {err}"))?;
     log::info!(
         "bevy_reconstruction: wasm model initialized (backbone applied {}, head applied {}).",
@@ -1743,8 +2162,9 @@ async fn wasm_run_request(
         })
         .collect::<Vec<_>>();
 
+    let synchronize_forward = request.config.model != PipelineModel::ZipSplat;
     let run_output = pipeline
-        .run_image_bytes_timed_with_cameras_async(inputs.as_slice(), true)
+        .run_image_bytes_timed_with_cameras_async(inputs.as_slice(), synchronize_forward)
         .await
         .map_err(|err| format!("inference failed: {err}"))?;
 
@@ -1766,6 +2186,7 @@ async fn wasm_run_request(
         .collect::<Vec<_>>();
 
     Ok(WasmRunResult {
+        config: request.config.clone(),
         cloud: cloud_build.cloud,
         selected_gaussians: cloud_build.selected_gaussians,
         total_gaussians,
@@ -1776,11 +2197,14 @@ async fn wasm_run_request(
 }
 
 #[cfg(target_arch = "wasm32")]
-fn wasm_model_root_url() -> Result<String, String> {
+fn wasm_model_root_url(model: PipelineModel) -> Result<String, String> {
     let model_base = js_window_string("BURN_RECONSTRUCTION_MODEL_BASE_URL")
         .unwrap_or_else(|| WASM_DEFAULT_MODEL_BASE_URL.to_string());
-    let remote_root = js_window_string("BURN_RECONSTRUCTION_YONO_REMOTE_ROOT")
-        .unwrap_or_else(|| WASM_DEFAULT_MODEL_REMOTE_ROOT.to_string());
+    let remote_root = match model {
+        PipelineModel::Yono => js_window_string("BURN_RECONSTRUCTION_YONO_REMOTE_ROOT"),
+        PipelineModel::ZipSplat => js_window_string("BURN_RECONSTRUCTION_ZIPSPLAT_REMOTE_ROOT"),
+    }
+    .unwrap_or_else(|| model.default_remote_root().to_string());
 
     if remote_root.starts_with("http://") || remote_root.starts_with("https://") {
         return Ok(remote_root);
@@ -2122,7 +2546,7 @@ fn add_loaded_image(
 
 fn set_loaded_images_status(ui: &mut UiState, verb: &str) {
     ui.status = format!(
-        "{verb} {} images. press 'Run Reconstruction' to infer gaussians.",
+        "{verb} {} images. use the Run button to infer gaussians.",
         ui.selected_images.len()
     );
 }
@@ -2137,6 +2561,65 @@ fn launch_options_from_env() -> LaunchOptions {
     {
         parse_launch_options_from_iter(std::env::args_os().skip(1))
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn initial_model_settings_from_env(launch: &LaunchOptions) -> ModelSettings {
+    launch.model_settings
+}
+
+#[cfg(target_arch = "wasm32")]
+fn initial_model_settings_from_env(_launch: &LaunchOptions) -> ModelSettings {
+    let mut settings = ModelSettings::default();
+    if let Some(value) =
+        wasm_query_param("model").or_else(|| js_window_string("BEVY_RECONSTRUCTION_MODEL"))
+    {
+        if let Ok(model) = value.parse::<PipelineModel>() {
+            settings.model = model;
+        }
+    }
+    if let Some(value) =
+        wasm_query_param("quality").or_else(|| js_window_string("BEVY_RECONSTRUCTION_QUALITY"))
+    {
+        if let Some(quality) = parse_pipeline_quality_arg_wasm(value.as_str()) {
+            settings.quality = quality;
+            settings.zipsplat_r = quality.default_zipsplat_r();
+        }
+    }
+    if let Some(value) = wasm_query_param("r")
+        .or_else(|| wasm_query_param("zipsplat_r"))
+        .or_else(|| js_window_string("BEVY_RECONSTRUCTION_ZIPSPLAT_R"))
+    {
+        if let Ok(r) = value.parse::<usize>() {
+            settings.model = PipelineModel::ZipSplat;
+            settings.zipsplat_r = ZipSplatCompression::new(r).get();
+        }
+    }
+    settings
+}
+
+#[cfg(target_arch = "wasm32")]
+fn parse_pipeline_quality_arg_wasm(value: &str) -> Option<PipelineQuality> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "fast" => Some(PipelineQuality::Fast),
+        "full" => Some(PipelineQuality::Full),
+        "balanced" => Some(PipelineQuality::Balanced),
+        "compact" => Some(PipelineQuality::Compact),
+        "preview" => Some(PipelineQuality::Preview),
+        "high" => Some(PipelineQuality::High),
+        _ => None,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn wasm_query_param(key: &str) -> Option<String> {
+    let window = web_sys::window()?;
+    let search = window.location().search().ok()?;
+    if search.trim().is_empty() || search == "?" {
+        return None;
+    }
+    let params = web_sys::UrlSearchParams::new_with_str(search.as_str()).ok()?;
+    params.get(key).filter(|entry| !entry.trim().is_empty())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2181,6 +2664,29 @@ where
                     options.output_glb = Some(PathBuf::from(path));
                 }
             }
+            "--model" => {
+                if let Some(model) = iter.next() {
+                    if let Some(parsed) = parse_pipeline_model_arg(&model.to_string_lossy()) {
+                        options.model_settings.model = parsed;
+                    }
+                }
+            }
+            "--quality" => {
+                if let Some(quality) = iter.next() {
+                    if let Some(parsed) = parse_pipeline_quality_arg(&quality.to_string_lossy()) {
+                        options.model_settings.quality = parsed;
+                        options.model_settings.zipsplat_r = parsed.default_zipsplat_r();
+                    }
+                }
+            }
+            "--zipsplat-r" | "--r" => {
+                if let Some(raw) = iter.next() {
+                    if let Ok(value) = raw.to_string_lossy().parse::<usize>() {
+                        options.model_settings.model = PipelineModel::ZipSplat;
+                        options.model_settings.zipsplat_r = ZipSplatCompression::new(value).get();
+                    }
+                }
+            }
             "--exit-after-run" => {
                 options.exit_after_run = true;
             }
@@ -2209,6 +2715,24 @@ where
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn parse_pipeline_model_arg(value: &str) -> Option<PipelineModel> {
+    value.parse::<PipelineModel>().ok()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_pipeline_quality_arg(value: &str) -> Option<PipelineQuality> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "fast" => Some(PipelineQuality::Fast),
+        "full" => Some(PipelineQuality::Full),
+        "balanced" => Some(PipelineQuality::Balanced),
+        "compact" => Some(PipelineQuality::Compact),
+        "preview" => Some(PipelineQuality::Preview),
+        "high" => Some(PipelineQuality::High),
+        _ => None,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn print_native_help() {
     println!(
         "\
@@ -2223,6 +2747,9 @@ options:
   --images <PATH...>        add multiple startup images
   --auto-run                run inference after startup images load
   --run-on-start            alias for --auto-run
+  --model <yono|zipsplat>   select reconstruction model
+  --quality <LEVEL>         full, balanced, compact, preview, fast, or high
+  --zipsplat-r <N>          ZipSplat compression ratio; higher emits fewer Gaussians
   --output-glb <PATH>       write GLB after inference (implies --auto-run)
   --exit-after-run          exit after inference finishes (implies --auto-run)
   --rev                     print 7-char git revision and exit
@@ -2785,7 +3312,41 @@ fn frustum_half_extents(base_half: f32, image_aspect: f32) -> (f32, f32) {
     }
 }
 
+fn estimate_zipsplat_gaussians(image_count: usize, settings: ModelSettings) -> usize {
+    let image_size = settings.pipeline_config().image_size;
+    let patches_per_axis = image_size / 14;
+    let tokens = image_count.max(1) * patches_per_axis * patches_per_axis;
+    let retained = ZipSplatCompression::new(settings.zipsplat_r).retained_tokens(tokens);
+    retained * ZipSplatConfig::default().gaussians_per_token
+}
+
+fn settings_ready_status(settings: ModelSettings, image_count: usize) -> String {
+    if image_count < 2 {
+        return format!(
+            "selected {}; add {} more image{} to run {}",
+            settings.model.display_name(),
+            2 - image_count,
+            if image_count == 1 { "" } else { "s" },
+            settings.model.display_name()
+        );
+    }
+    settings.summary(image_count)
+}
+
+fn mark_settings_changed(ui: &mut UiState, settings: ModelSettings) {
+    if ui.active_cloud.is_some() {
+        ui.output_stale = true;
+        ui.status = format!(
+            "Settings changed. Run {} to update the scene.",
+            settings.model.display_name()
+        );
+    } else {
+        ui.status = settings_ready_status(settings, ui.selected_images.len());
+    }
+}
+
 fn format_inference_complete_status(
+    model: PipelineModel,
     timings: &burn_reconstruction::ForwardTimings,
     selected_gaussians: usize,
     total_gaussians: usize,
@@ -2794,20 +3355,32 @@ fn format_inference_complete_status(
     let millis = timings.total.as_secs_f64() * 1000.0;
     match frustum_count {
         Some(count) if millis.is_finite() && millis >= 0.05 => format!(
-            "inference complete: {} / {} gaussians, {:.2} ms total (frustums: {})",
-            selected_gaussians, total_gaussians, millis, count
+            "{} complete: {} / {} gaussians, {:.2} ms total (frustums: {})",
+            model.display_name(),
+            selected_gaussians,
+            total_gaussians,
+            millis,
+            count
         ),
         Some(count) => format!(
-            "inference complete: {} / {} gaussians (frustums: {})",
-            selected_gaussians, total_gaussians, count
+            "{} complete: {} / {} gaussians (frustums: {})",
+            model.display_name(),
+            selected_gaussians,
+            total_gaussians,
+            count
         ),
         None if millis.is_finite() && millis >= 0.05 => format!(
-            "inference complete: {} / {} gaussians, {:.2} ms total",
-            selected_gaussians, total_gaussians, millis
+            "{} complete: {} / {} gaussians, {:.2} ms total",
+            model.display_name(),
+            selected_gaussians,
+            total_gaussians,
+            millis
         ),
         None => format!(
-            "inference complete: {} / {} gaussians",
-            selected_gaussians, total_gaussians
+            "{} complete: {} / {} gaussians",
+            model.display_name(),
+            selected_gaussians,
+            total_gaussians
         ),
     }
 }
@@ -2819,6 +3392,9 @@ fn status_is_busy(status_lower: &str) -> bool {
         "reconstruction queued",
         "loading model",
         "resolving model",
+        "initializing model",
+        "initializing yonosplat",
+        "initializing zipsplat",
         "initializing yono",
         "initializing wasm",
         "downloading",
@@ -2838,7 +3414,7 @@ fn status_badge_from_ui(ui: &UiState) -> (String, StatusBadgeTone) {
     if status_lower.contains("failed") || status_lower.contains("error") {
         return ("error".to_string(), StatusBadgeTone::Error);
     }
-    if status_lower.contains("inference complete") {
+    if status_lower.contains("complete") {
         return ("complete".to_string(), StatusBadgeTone::Success);
     }
     if status_is_busy(&status_lower) {
@@ -2898,6 +3474,7 @@ fn button_palette(
     kind: ControlButtonKind,
     interaction: Interaction,
     disabled: bool,
+    active: bool,
 ) -> (Color, Color, Color) {
     if disabled {
         return (
@@ -2905,6 +3482,15 @@ fn button_palette(
             BUTTON_BORDER_DISABLED,
             BUTTON_TEXT_DISABLED,
         );
+    }
+
+    if active {
+        return match interaction {
+            Interaction::Pressed | Interaction::Hovered => {
+                (BUTTON_BG_ACTIVE_HOVER, BUTTON_BORDER_ACTIVE, BUTTON_TEXT)
+            }
+            Interaction::None => (BUTTON_BG_ACTIVE, BUTTON_BORDER_ACTIVE, BUTTON_TEXT),
+        };
     }
 
     match (kind, interaction) {
@@ -2952,6 +3538,71 @@ fn update_selection_label(ui: Res<UiState>, mut labels: Query<&mut Text, With<Se
     }
 }
 
+fn update_config_summary_label(
+    ui: Res<UiState>,
+    settings: Res<ModelSettings>,
+    mut labels: Query<&mut Text, With<ConfigSummaryLabel>>,
+) {
+    let mut summary = settings.summary(ui.selected_images.len());
+    if ui.output_stale {
+        summary.push_str(" • output stale");
+    }
+    for mut text in &mut labels {
+        text.0 = summary.clone();
+    }
+}
+
+fn update_model_detail_label(
+    settings: Res<ModelSettings>,
+    mut labels: Query<&mut Text, With<ModelDetailLabel>>,
+) {
+    let detail = settings.model_detail();
+    for mut text in &mut labels {
+        text.0 = detail.clone();
+    }
+}
+
+fn update_run_button_label(
+    ui: Res<UiState>,
+    settings: Res<ModelSettings>,
+    mut labels: Query<&mut Text, With<RunButtonLabel>>,
+) {
+    let status_lower = ui.status.to_ascii_lowercase();
+    let label = if ui.selected_images.len() < 2 {
+        "Select 2+ images".to_string()
+    } else if status_is_busy(status_lower.as_str()) {
+        format!("Running {}...", settings.model.display_name())
+    } else {
+        settings.run_label().to_string()
+    };
+    for mut text in &mut labels {
+        text.0 = label.clone();
+    }
+}
+
+fn update_zipsplat_r_label(
+    settings: Res<ModelSettings>,
+    mut labels: Query<&mut Text, With<ZipSplatRLabel>>,
+) {
+    for mut text in &mut labels {
+        text.0 = format!("ZipSplat r={}", settings.zipsplat_r);
+    }
+}
+
+fn update_model_specific_visibility(
+    settings: Res<ModelSettings>,
+    mut zip_sections: Query<&mut Visibility, With<ZipSplatSettingsRoot>>,
+) {
+    let visibility = if settings.model == PipelineModel::ZipSplat {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    for mut section in &mut zip_sections {
+        *section = visibility;
+    }
+}
+
 fn update_status_badge(
     ui: Res<UiState>,
     mut texts: Query<&mut Text, With<QueueBadgeText>>,
@@ -2979,19 +3630,37 @@ fn update_status_badge(
 
 fn update_control_button_visuals(
     ui: Res<UiState>,
+    settings: Res<ModelSettings>,
     frustums: Res<FrustumDebug>,
     mut buttons: Query<ControlButtonVisualQuery<'_>, With<Button>>,
     mut labels: Query<&mut TextColor, With<ButtonLabel>>,
 ) {
-    let run_disabled = ui.selected_images.len() < 2;
+    let status_lower = ui.status.to_ascii_lowercase();
+    let run_disabled = ui.selected_images.len() < 2 || status_is_busy(status_lower.as_str());
     let clear_disabled = ui.selected_images.is_empty()
         && ui.active_cloud.is_none()
         && frustums.poses_world_from_camera.is_empty();
 
-    for (interaction, button, run, clear, children, mut bg, mut border) in &mut buttons {
-        let disabled = (run.is_some() && run_disabled) || (clear.is_some() && clear_disabled);
+    for (
+        interaction,
+        button,
+        run,
+        clear,
+        model,
+        quality,
+        zipsplat_r,
+        children,
+        mut bg,
+        mut border,
+    ) in &mut buttons
+    {
+        let disabled = (run.is_some() && run_disabled)
+            || (clear.is_some() && clear_disabled)
+            || (zipsplat_r.is_some() && settings.model != PipelineModel::ZipSplat);
+        let active = model.is_some_and(|button| button.0 == settings.model)
+            || quality.is_some_and(|button| button.0 == settings.quality);
         let (button_bg, button_border, text_color) =
-            button_palette(button.0, *interaction, disabled);
+            button_palette(button.0, *interaction, disabled, active);
 
         bg.0 = button_bg;
         *border = BorderColor::all(button_border);
@@ -3025,6 +3694,23 @@ mod tests {
         assert!(parsed.auto_run);
         assert_eq!(parsed.output_glb, Some(PathBuf::from("out.glb")));
         assert!(!parsed.exit_after_run);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn parse_launch_options_supports_model_quality_and_zipsplat_r() {
+        let args = [
+            "--model",
+            "zipsplat",
+            "--quality",
+            "compact",
+            "--zipsplat-r",
+            "6",
+        ];
+        let parsed = parse_launch_options_from_iter(args);
+        assert_eq!(parsed.model_settings.model, PipelineModel::ZipSplat);
+        assert_eq!(parsed.model_settings.quality, PipelineQuality::Compact);
+        assert_eq!(parsed.model_settings.zipsplat_r, 6);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -3298,11 +3984,11 @@ mod tests {
         let (_, tone_resolving) = status_badge_from_ui(&ui);
         assert_eq!(tone_resolving, StatusBadgeTone::Busy);
 
-        ui.status = "initializing yono pipeline modules...".to_string();
+        ui.status = "initializing ZipSplat pipeline modules...".to_string();
         let (_, tone_initializing) = status_badge_from_ui(&ui);
         assert_eq!(tone_initializing, StatusBadgeTone::Busy);
 
-        ui.status = "yono modules initialized in 12.0s; preparing inference...".to_string();
+        ui.status = "YoNoSplat modules initialized in 12.0s; preparing inference...".to_string();
         let (_, tone_preparing) = status_badge_from_ui(&ui);
         assert_eq!(tone_preparing, StatusBadgeTone::Busy);
 
@@ -3314,10 +4000,33 @@ mod tests {
     #[test]
     fn button_palette_uses_disabled_colors() {
         let (bg, border, text) =
-            button_palette(ControlButtonKind::Primary, Interaction::Hovered, true);
+            button_palette(ControlButtonKind::Primary, Interaction::Hovered, true, true);
         assert_eq!(bg, BUTTON_BG_DISABLED);
         assert_eq!(border, BUTTON_BORDER_DISABLED);
         assert_eq!(text, BUTTON_TEXT_DISABLED);
+    }
+
+    #[test]
+    fn button_palette_uses_active_colors() {
+        let (bg, border, text) =
+            button_palette(ControlButtonKind::Primary, Interaction::None, false, true);
+        assert_eq!(bg, BUTTON_BG_ACTIVE);
+        assert_eq!(border, BUTTON_BORDER_ACTIVE);
+        assert_eq!(text, BUTTON_TEXT);
+    }
+
+    #[test]
+    fn zipsplat_summary_reports_compression_estimate() {
+        let settings = ModelSettings {
+            model: PipelineModel::ZipSplat,
+            quality: PipelineQuality::Compact,
+            zipsplat_r: 4,
+        };
+        let summary = settings.summary(2);
+        assert!(summary.contains("ZipSplat"));
+        assert!(summary.contains("r=4"));
+        assert!(summary.contains("~"));
+        assert!(summary.contains("gaussians"));
     }
 
     #[test]

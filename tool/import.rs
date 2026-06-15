@@ -15,6 +15,13 @@ use burn_yono::{
     },
     model::YonoHeadConfig,
 };
+use burn_zipsplat::{
+    import::{
+        load_zipsplat_from_pytorch, save_zipsplat_record_bpk,
+        save_zipsplat_record_bpk_with_precision,
+    },
+    ZipSplatConfig, ZipSplatWeightPrecision,
+};
 
 type ImportBackendF32 = burn::backend::NdArray<f32>;
 
@@ -41,6 +48,12 @@ enum ComponentArg {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
+enum ModelArg {
+    Yono,
+    Zipsplat,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
 enum PrecisionArg {
     F16,
     F32,
@@ -60,6 +73,9 @@ impl PrecisionArg {
 #[derive(Clone, Debug, Parser)]
 #[command(about = "burn_reconstruction import", version, long_about = None)]
 struct ImportConfig {
+    #[arg(long, value_enum, default_value_t = ModelArg::Yono)]
+    model: ModelArg,
+
     #[arg(long, value_enum, default_value_t = ComponentArg::Both)]
     component: ComponentArg,
 
@@ -77,6 +93,12 @@ struct ImportConfig {
 
     #[arg(long, default_value = "assets/models/yono_head")]
     head_output: PathBuf,
+
+    #[arg(long, default_value = "assets/models/zipsplat-da3g-252p.tar")]
+    zipsplat_weights: PathBuf,
+
+    #[arg(long, default_value = "assets/models/zipsplat")]
+    zipsplat_output: PathBuf,
 
     #[arg(long, value_enum, default_value_t = OutputFormat::Bpk)]
     format: OutputFormat,
@@ -137,6 +159,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("[IMPORT] --precision includes f16, but .mpk export stores full precision only");
     }
 
+    match args.model {
+        ModelArg::Yono => import_yono(&args),
+        ModelArg::Zipsplat => import_zipsplat(&args),
+    }
+}
+
+fn import_yono(args: &ImportConfig) -> Result<(), Box<dyn std::error::Error>> {
     if matches!(args.component, ComponentArg::Both | ComponentArg::Backbone) {
         let device = <ImportBackendF32 as Backend>::Device::default();
         let (model, result) = load_yono_backbone_from_safetensors::<ImportBackendF32>(
@@ -206,6 +235,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Saved head f16 checkpoint to {}", f16_path.display());
                 maybe_write_parts(f16_path.as_path(), &args, "head f16")?;
             }
+        }
+    }
+
+    Ok(())
+}
+
+fn import_zipsplat(args: &ImportConfig) -> Result<(), Box<dyn std::error::Error>> {
+    if !matches!(args.format, OutputFormat::Bpk) {
+        return Err("ZipSplat import currently writes native burnpack (.bpk) only".into());
+    }
+
+    let device = <ImportBackendF32 as Backend>::Device::default();
+    let (model, result) = load_zipsplat_from_pytorch::<ImportBackendF32>(
+        &device,
+        ZipSplatConfig::default(),
+        args.zipsplat_weights.as_path(),
+    )?;
+    report_apply_result("zipsplat/f32", &result);
+
+    if args.precision.include_f32() || args.precision.include_f16() {
+        let checkpoint_path = if args.precision.include_f16() && !args.precision.include_f32() {
+            let source = save_zipsplat_record_bpk(&model, args.zipsplat_output.as_path())?;
+            println!("Saved ZipSplat f32 checkpoint to {}", source.display());
+            source
+        } else {
+            let path = save_zipsplat_record_bpk_with_precision(
+                &model,
+                args.zipsplat_output.as_path(),
+                ZipSplatWeightPrecision::F32,
+            )?;
+            println!("Saved ZipSplat f32 checkpoint to {}", path.display());
+            if args.precision.include_f32() {
+                maybe_write_parts(path.as_path(), args, "ZipSplat f32")?;
+            }
+            path
+        };
+
+        if args.precision.include_f16() {
+            let f16_path =
+                convert_burnpack_to_f16(checkpoint_path.as_path(), args.zipsplat_output.as_path())?;
+            println!("Saved ZipSplat f16 checkpoint to {}", f16_path.display());
+            maybe_write_parts(f16_path.as_path(), args, "ZipSplat f16")?;
         }
     }
 

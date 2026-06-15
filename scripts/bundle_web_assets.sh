@@ -3,15 +3,24 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_ROOT="${1:-${ROOT_DIR}/assets/models}"
-DST_ROOT="${2:-${ROOT_DIR}/www/assets/model/yono}"
+MODEL_NAME="${3:-${BURN_RECONSTRUCTION_WEB_MODEL:-yono}}"
+DST_ROOT="${2:-${ROOT_DIR}/www/assets/model/${MODEL_NAME}}"
 IMAGE_SRC_ROOT="${ROOT_DIR}/assets/images"
 IMAGE_DST_ROOT="${ROOT_DIR}/www/assets/images"
 STRICT="${BURN_RECONSTRUCTION_WEB_BUNDLE_STRICT:-0}"
 
-MODELS=(
-  "yono_backbone"
-  "yono_head"
-)
+case "${MODEL_NAME}" in
+  yono)
+    MODELS=("yono_backbone" "yono_head")
+    ;;
+  zipsplat)
+    MODELS=("zipsplat")
+    ;;
+  *)
+    echo "[bundle] unsupported model '${MODEL_NAME}' (expected yono or zipsplat)" >&2
+    exit 1
+    ;;
+esac
 PRECISION_SUFFIXES=(
   "_f16"
 )
@@ -35,6 +44,7 @@ fi
 
 echo "[bundle] source=${SRC_ROOT}"
 echo "[bundle] dest=${DST_ROOT}"
+echo "[bundle] model=${MODEL_NAME}"
 
 copy_count=0
 missing_count=0
@@ -81,7 +91,7 @@ for model in "${MODELS[@]}"; do
   done
 
   if [[ "${found_any}" -eq 0 ]]; then
-    echo "[bundle] missing required model parts bundle (f16): ${model}_f16.bpk.parts.json + shards" >&2
+    echo "[bundle] missing required ${MODEL_NAME} model parts bundle (f16): ${model}_f16.bpk.parts.json + shards" >&2
     missing_count=$((missing_count + 1))
   fi
 done
@@ -89,7 +99,7 @@ done
 if [[ "${missing_count}" -ne 0 ]]; then
   if [[ "${STRICT}" == "1" ]]; then
     echo "[bundle] required burnpack parts bundles are missing. Generate them first, for example:" >&2
-    echo "[bundle] cargo run --features cli --bin import -- --component both --format bpk --precision f16" >&2
+    echo "[bundle] cargo run -p burn_reconstruction --features cli --bin import -- --component both --format bpk --precision f16" >&2
     exit 1
   fi
   echo "[bundle] required parts bundles are missing (skipping absent artifacts)." >&2
@@ -108,7 +118,7 @@ manifest_path="${DST_ROOT}/manifest.json"
 timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 {
   echo "{"
-  echo "  \"model\": \"yono\","
+  echo "  \"model\": \"${MODEL_NAME}\","
   echo "  \"generated_at_utc\": \"${timestamp}\","
   echo "  \"files\": ["
   for i in "${!manifest_entries[@]}"; do

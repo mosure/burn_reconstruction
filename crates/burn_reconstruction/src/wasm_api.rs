@@ -11,22 +11,30 @@ use wasm_bindgen_futures::JsFuture;
 
 use crate::{
     backend::{default_device, ensure_wasm_wgpu_runtime},
-    pipeline::{ImageToGaussianPipeline, PipelineConfig, PipelineInputImage},
+    pipeline::{ImageToGaussianPipeline, PipelineConfig, PipelineInputImage, PipelineModel},
 };
 
 static PANIC_HOOK_ONCE: Once = Once::new();
 const DEFAULT_MODEL_BASE_URL: &str = "https://aberration.technology/model";
-const DEFAULT_MODEL_REMOTE_ROOT: &str = "yono";
 const BACKBONE_BURNPACK_FILE: &str = "yono_backbone_f16.bpk";
 const HEAD_BURNPACK_FILE: &str = "yono_head_f16.bpk";
+const ZIPSPLAT_BURNPACK_FILE: &str = "zipsplat_f16.bpk";
 
 thread_local! {
     static PIPELINE_CACHE: RefCell<Option<CachedPipeline>> = const { RefCell::new(None) };
 }
 
 struct CachedPipeline {
-    image_size: usize,
+    key: WasmPipelineCacheKey,
     pipeline: ImageToGaussianPipeline,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct WasmPipelineCacheKey {
+    model: PipelineModel,
+    image_size: usize,
+    zipsplat_r: usize,
+    model_root: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,6 +51,9 @@ struct WasmPartEntry {
 #[derive(Clone, Debug)]
 pub struct WasmInferOptions {
     image_size: u32,
+    model: String,
+    quality: String,
+    zipsplat_r: u32,
     max_gaussians: u32,
     opacity_threshold: f32,
     sort_by_opacity: bool,
@@ -54,6 +65,9 @@ impl Default for WasmInferOptions {
     fn default() -> Self {
         Self {
             image_size: 224,
+            model: "yono".to_string(),
+            quality: "balanced".to_string(),
+            zipsplat_r: 2,
             max_gaussians: 4096,
             opacity_threshold: 0.01,
             sort_by_opacity: true,
@@ -73,6 +87,19 @@ impl WasmInferOptions {
     pub fn set_image_size(&mut self, image_size: u32) {
         let size = image_size.max(14);
         self.image_size = size - (size % 14);
+    }
+
+    pub fn set_model(&mut self, model: String) {
+        self.model = model;
+    }
+
+    pub fn set_quality(&mut self, quality: String) {
+        self.quality = quality;
+        self.zipsplat_r = quality_to_zipsplat_r(self.quality.as_str()) as u32;
+    }
+
+    pub fn set_zipsplat_r(&mut self, zipsplat_r: u32) {
+        self.zipsplat_r = zipsplat_r.clamp(1, burn_zipsplat::MAX_COMPRESSION_R as u32);
     }
 
     pub fn set_max_gaussians(&mut self, max_gaussians: u32) {
@@ -138,7 +165,7 @@ pub async fn infer_glb_from_image_bytes_multi(
     }
 
     let image_bytes = collect_image_bytes(images)?;
-    ensure_pipeline_loaded(opts.image_size as usize, &opts).await?;
+    ensure_pipeline_loaded(&opts).await?;
 
     let names = (0..image_bytes.len())
         .map(|index| format!("view_{index:02}.png"))
@@ -155,9 +182,10 @@ pub async fn infer_glb_from_image_bytes_multi(
     let entry = PIPELINE_CACHE
         .with(|cell| cell.borrow_mut().take())
         .ok_or_else(|| JsValue::from_str("pipeline cache is unexpectedly empty"))?;
+    let synchronize_forward = entry.pipeline.config().model != PipelineModel::ZipSplat;
     let run_result = entry
         .pipeline
-        .run_image_bytes_timed_with_cameras_async(inputs.as_slice(), true)
+        .run_image_bytes_timed_with_cameras_async(inputs.as_slice(), synchronize_forward)
         .await;
     PIPELINE_CACHE.with(|cell| {
         *cell.borrow_mut() = Some(entry);
@@ -220,14 +248,27 @@ fn collect_image_bytes(images: Array) -> Result<Vec<Vec<u8>>, JsValue> {
     Ok(out)
 }
 
-async fn ensure_pipeline_loaded(
-    image_size: usize,
-    options: &WasmInferOptions,
-) -> Result<(), JsValue> {
+async fn ensure_pipeline_loaded(options: &WasmInferOptions) -> Result<(), JsValue> {
+    let model = parse_model(options.model.as_str())?;
+    let image_size = options.image_size as usize;
+    if model == PipelineModel::Yono
+        && image_size != PipelineModel::Yono.capabilities().default_image_size
+    {
+        return Err(JsValue::from_str(
+            "YoNoSplat wasm inference requires image-size 224 for the provided pretrained weights",
+        ));
+    }
+    let model_root = resolve_model_root_url(options, model);
+    let key = WasmPipelineCacheKey {
+        model,
+        image_size,
+        zipsplat_r: options.effective_zipsplat_r(),
+        model_root: model_root.clone(),
+    };
     let needs_reload = PIPELINE_CACHE.with(|cell| {
         let cache = cell.borrow();
         match cache.as_ref() {
-            Some(entry) => entry.image_size != image_size,
+            Some(entry) => entry.key != key,
             None => true,
         }
     });
@@ -235,36 +276,67 @@ async fn ensure_pipeline_loaded(
         return Ok(());
     }
 
-    let model_root = resolve_model_root_url(options);
-    let backbone_url = join_url(model_root.as_str(), BACKBONE_BURNPACK_FILE);
-    let head_url = join_url(model_root.as_str(), HEAD_BURNPACK_FILE);
-    let backbone_parts = fetch_parts_bundle(backbone_url.as_str()).await?;
-    let head_parts = fetch_parts_bundle(head_url.as_str()).await?;
-
     let cfg = PipelineConfig {
         image_size,
+        model,
+        zipsplat_r: key.zipsplat_r,
         ..PipelineConfig::default()
     };
     let device = default_device();
     ensure_wasm_wgpu_runtime(&device).await;
-    let (pipeline, _report) = ImageToGaussianPipeline::load_from_yono_parts(
-        device,
-        cfg,
-        backbone_parts.as_slice(),
-        head_parts.as_slice(),
-    )
+    let (pipeline, _report) = match model {
+        PipelineModel::Yono => {
+            let backbone_url = join_url(model_root.as_str(), BACKBONE_BURNPACK_FILE);
+            let head_url = join_url(model_root.as_str(), HEAD_BURNPACK_FILE);
+            let backbone_parts = fetch_parts_bundle(backbone_url.as_str()).await?;
+            let head_parts = fetch_parts_bundle(head_url.as_str()).await?;
+            ImageToGaussianPipeline::load_from_yono_parts(
+                device,
+                cfg,
+                backbone_parts.as_slice(),
+                head_parts.as_slice(),
+            )
+        }
+        PipelineModel::ZipSplat => {
+            let model_url = join_url(model_root.as_str(), ZIPSPLAT_BURNPACK_FILE);
+            let model_parts = fetch_parts_bundle(model_url.as_str()).await?;
+            ImageToGaussianPipeline::load_from_zipsplat_parts(device, cfg, model_parts.as_slice())
+        }
+    }
     .map_err(|err| JsValue::from_str(format!("failed to initialize pipeline: {err}").as_str()))?;
 
     PIPELINE_CACHE.with(|cell| {
-        *cell.borrow_mut() = Some(CachedPipeline {
-            image_size,
-            pipeline,
-        });
+        *cell.borrow_mut() = Some(CachedPipeline { key, pipeline });
     });
     Ok(())
 }
 
-fn resolve_model_root_url(options: &WasmInferOptions) -> String {
+impl WasmInferOptions {
+    fn effective_zipsplat_r(&self) -> usize {
+        let explicit = self.zipsplat_r as usize;
+        if explicit > 0 {
+            return burn_zipsplat::ZipSplatCompression::new(explicit).get();
+        }
+        quality_to_zipsplat_r(self.quality.as_str())
+    }
+}
+
+fn parse_model(model: &str) -> Result<PipelineModel, JsValue> {
+    model
+        .parse::<PipelineModel>()
+        .map_err(|err| JsValue::from_str(format!("{err}").as_str()))
+}
+
+fn quality_to_zipsplat_r(quality: &str) -> usize {
+    match quality.trim().to_ascii_lowercase().as_str() {
+        "full" | "high" => 1,
+        "compact" => 4,
+        "preview" | "fast" => 8,
+        _ => 2,
+    }
+}
+
+fn resolve_model_root_url(options: &WasmInferOptions, model: PipelineModel) -> String {
     let model_base = options
         .model_base_url
         .clone()
@@ -275,8 +347,11 @@ fn resolve_model_root_url(options: &WasmInferOptions) -> String {
         .model_remote_root
         .clone()
         .filter(|entry| !entry.trim().is_empty())
-        .or_else(|| js_window_string("BURN_RECONSTRUCTION_YONO_REMOTE_ROOT"))
-        .unwrap_or_else(|| DEFAULT_MODEL_REMOTE_ROOT.to_string());
+        .or_else(|| match model {
+            PipelineModel::Yono => js_window_string("BURN_RECONSTRUCTION_YONO_REMOTE_ROOT"),
+            PipelineModel::ZipSplat => js_window_string("BURN_RECONSTRUCTION_ZIPSPLAT_REMOTE_ROOT"),
+        })
+        .unwrap_or_else(|| model.default_remote_root().to_string());
 
     if remote_root.starts_with("http://") || remote_root.starts_with("https://") {
         return remote_root;

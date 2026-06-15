@@ -40,11 +40,34 @@
         align-items: center;
         margin-bottom: 10px;
       }
-      label {
+      .controls-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 10px;
+        align-items: end;
+        margin-bottom: 10px;
+      }
+      .field {
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .field input,
+      .field select {
+        width: 100%;
+        box-sizing: border-box;
+      }
+      .field.compact {
+        width: 180px;
+      }
+      label,
+      .label {
         color: var(--muted);
         font-size: 13px;
       }
       input,
+      select,
       button {
         background: #0d1522;
         color: var(--fg);
@@ -54,6 +77,54 @@
       }
       button {
         cursor: pointer;
+      }
+      button:disabled {
+        cursor: default;
+        opacity: 0.7;
+      }
+      input[type="range"] {
+        min-width: 140px;
+      }
+      .segmented {
+        display: inline-flex;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+      .segment {
+        min-width: 112px;
+        border: 0;
+        border-right: 1px solid var(--line);
+        border-radius: 0;
+        padding: 8px 11px;
+      }
+      .segment:last-child {
+        border-right: 0;
+      }
+      .segment[aria-pressed="true"] {
+        background: #17314d;
+        color: #f3f8ff;
+        box-shadow: inset 0 -2px 0 #75a9e8;
+      }
+      .value {
+        min-width: 28px;
+        color: var(--fg);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+      }
+      .hint,
+      .summary {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .summary {
+        margin: 2px 0 12px;
+      }
+      #model-detail {
+        margin-bottom: 10px;
+      }
+      [hidden] {
+        display: none !important;
       }
       #status {
         margin-top: 12px;
@@ -71,38 +142,88 @@
   </head>
   <body>
     <main>
-      <h1>Wasm YoNo Inference</h1>
+      <h1>Wasm Reconstruction Inference</h1>
       <div class="row">
-        <label for="images">Input images (2+):</label>
-        <input id="images" type="file" accept="image/png,image/jpeg,image/webp" multiple />
+        <div class="field">
+          <label for="images">Input images (2+)</label>
+          <input id="images" type="file" accept="image/png,image/jpeg,image/webp" multiple />
+        </div>
       </div>
       <div class="row">
-        <label for="image-size">Image size</label>
-        <input id="image-size" type="number" min="14" step="14" value="224" />
-        <label for="max-gaussians">Max gaussians</label>
-        <input id="max-gaussians" type="number" min="1" step="1" value="4096" />
-        <label for="opacity-threshold">Opacity threshold</label>
-        <input id="opacity-threshold" type="number" min="0" max="1" step="0.001" value="0.01" />
+        <span class="label">Model</span>
+        <div id="model-tabs" class="segmented" role="tablist" aria-label="Model">
+          <button id="model-yono" class="segment" type="button" data-model="yono" aria-pressed="true">
+            YoNoSplat
+          </button>
+          <button id="model-zipsplat" class="segment" type="button" data-model="zipsplat" aria-pressed="false">
+            ZipSplat
+          </button>
+        </div>
+      </div>
+      <div id="model-detail" class="hint">
+        YoNoSplat uses fixed pretrained reconstruction weights. Output detail controls export filtering.
       </div>
       <div class="row">
-        <button id="run" type="button">Run Inference</button>
+        <div class="field compact">
+          <label for="quality">Output detail</label>
+          <select id="quality">
+            <option value="full">full</option>
+            <option value="balanced" selected>balanced</option>
+            <option value="compact">compact</option>
+            <option value="preview">preview</option>
+          </select>
+        </div>
+      </div>
+      <div id="zipsplat-settings" class="row" hidden>
+        <label for="zipsplat-r">ZipSplat r</label>
+        <input id="zipsplat-r" type="range" min="1" max="16" step="1" value="2" />
+        <span id="zipsplat-r-value" class="value">2</span>
+        <span class="hint">higher r emits fewer gaussians</span>
+      </div>
+      <div id="config-summary" class="summary">Ready: YoNoSplat • balanced detail • no images</div>
+      <div class="controls-grid">
+        <div class="field">
+          <label for="image-size">Image size</label>
+          <input id="image-size" type="number" min="14" step="14" value="224" />
+        </div>
+        <div class="field">
+          <label for="max-gaussians">Max gaussians</label>
+          <input id="max-gaussians" type="number" min="1" step="1" value="4096" />
+        </div>
+        <div class="field">
+          <label for="opacity-threshold">Opacity threshold</label>
+          <input id="opacity-threshold" type="number" min="0" max="1" step="0.001" value="0.01" />
+        </div>
+      </div>
+      <div class="row">
+        <button id="run" type="button">Select 2+ images</button>
       </div>
       <a id="download" download="gaussians.glb">Download GLB</a>
       <div id="status">initializing wasm...</div>
     </main>
     <script type="module">
-      const SW_VERSION = "v4";
+      const SW_VERSION = "v6";
       const statusEl = document.getElementById("status");
       const fileInput = document.getElementById("images");
       const runButton = document.getElementById("run");
       const downloadLink = document.getElementById("download");
       const imageSizeInput = document.getElementById("image-size");
+      const modelButtons = Array.from(document.querySelectorAll("[data-model]"));
+      const modelDetail = document.getElementById("model-detail");
+      const zipsplatSettings = document.getElementById("zipsplat-settings");
+      const configSummary = document.getElementById("config-summary");
+      const qualitySelect = document.getElementById("quality");
+      const zipsplatRInput = document.getElementById("zipsplat-r");
+      const zipsplatRValue = document.getElementById("zipsplat-r-value");
       const maxGaussiansInput = document.getElementById("max-gaussians");
       const opacityInput = document.getElementById("opacity-threshold");
 
       let wasm = null;
       let objectUrl = null;
       let queuedRunAfterInit = false;
+      let selectedModel = "yono";
+      let outputStale = false;
+      let runInFlight = false;
 
       const setStatus = (text) => {
         console.info(`[wasm-infer] ${text}`);
@@ -114,8 +235,92 @@
           URL.revokeObjectURL(objectUrl);
           objectUrl = null;
         }
+        outputStale = false;
         downloadLink.style.display = "none";
         downloadLink.removeAttribute("href");
+        downloadLink.textContent = "Download GLB";
+      };
+
+      const modelName = (model) => (model === "zipsplat" ? "ZipSplat" : "YoNoSplat");
+
+      const qualityPresetR = {
+        full: 1,
+        balanced: 2,
+        compact: 4,
+        preview: 8,
+      };
+
+      const imageCountLabel = () => {
+        const count = fileInput.files?.length ?? 0;
+        if (count === 0) return "no images";
+        if (count === 1) return "1 image";
+        return `${count} images`;
+      };
+
+      const estimateZipSplatGaussians = () => {
+        const imageSize = Number(imageSizeInput.value || 252);
+        const patchesPerAxis = Math.max(1, Math.floor(imageSize / 14));
+        const tokens = Math.max(1, fileInput.files?.length ?? 0) * patchesPerAxis * patchesPerAxis;
+        const retained = Math.max(1, Math.ceil(tokens / Number(zipsplatRInput.value || 2)));
+        return retained * 32;
+      };
+
+      const modelDetailText = () => {
+        if (selectedModel === "zipsplat") {
+          return `ZipSplat uses compression r=${zipsplatRInput.value || 2}; higher r emits fewer gaussians before export filtering.`;
+        }
+        return "YoNoSplat uses fixed pretrained reconstruction weights. Output detail controls export filtering.";
+      };
+
+      const markOutputStale = () => {
+        if (objectUrl) {
+          outputStale = true;
+          downloadLink.textContent = "Download previous GLB";
+        }
+        syncUi();
+      };
+
+      const syncUi = () => {
+        const zipsplatActive = selectedModel === "zipsplat";
+        for (const button of modelButtons) {
+          button.setAttribute("aria-pressed", String(button.dataset.model === selectedModel));
+        }
+        zipsplatSettings.hidden = !zipsplatActive;
+        zipsplatRValue.textContent = String(zipsplatRInput.value || 2);
+        modelDetail.textContent = modelDetailText();
+
+        const count = fileInput.files?.length ?? 0;
+        runButton.textContent =
+          runInFlight
+            ? `Running ${modelName(selectedModel)}...`
+            : count < 2
+              ? "Select 2+ images"
+              : `Run ${modelName(selectedModel)}`;
+
+        const quality = qualitySelect.value || "balanced";
+        let summary =
+          selectedModel === "zipsplat"
+            ? count > 0
+              ? `Ready: ZipSplat • ${quality} detail • r=${zipsplatRInput.value || 2} • ${imageCountLabel()} • ~${estimateZipSplatGaussians()} gaussians`
+              : `Ready: ZipSplat • ${quality} detail • r=${zipsplatRInput.value || 2} • no images`
+            : `Ready: YoNoSplat • ${quality} detail • ${imageCountLabel()}`;
+        if (outputStale) summary += " • output stale";
+        configSummary.textContent = summary;
+      };
+
+      const setSelectedModel = (model) => {
+        const previous = selectedModel;
+        selectedModel = model;
+        if (selectedModel === "zipsplat" && imageSizeInput.value === "224") {
+          imageSizeInput.value = "252";
+        }
+        if (selectedModel === "zipsplat" && qualityPresetR[qualitySelect.value]) {
+          zipsplatRInput.value = String(qualityPresetR[qualitySelect.value]);
+        }
+        if (selectedModel === "yono" && previous === "zipsplat" && imageSizeInput.value === "252") {
+          imageSizeInput.value = "224";
+        }
+        markOutputStale();
       };
 
       const serviceWorkerCandidates = () => {
@@ -142,22 +347,51 @@
         }
       };
 
+      const softwareAdapterAllowed = () =>
+        globalThis.BURN_RECONSTRUCTION_ALLOW_SOFTWARE_WEBGPU === true;
+
+      const adapterInfoText = (info) =>
+        [info?.vendor, info?.architecture, info?.device, info?.description]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+
+      const isSoftwareAdapter = (adapter) => {
+        const infoText = adapterInfoText(adapter?.info);
+        return (
+          infoText.includes("swiftshader") ||
+          infoText.includes("software") ||
+          infoText.includes("llvmpipe")
+        );
+      };
+
       const ensureWebGpuAdapter = async () => {
         const gpu = globalThis.navigator?.gpu;
-        if (!gpu) return false;
+        if (!gpu) return { ok: false, reason: "WebGPU is unavailable in this browser." };
         try {
-          return (await gpu.requestAdapter()) != null;
-        } catch (_err) {
-          return false;
+          const adapter = await gpu.requestAdapter();
+          if (!adapter) {
+            return { ok: false, reason: "WebGPU adapter is unavailable in this browser." };
+          }
+          if (isSoftwareAdapter(adapter) && !softwareAdapterAllowed()) {
+            const label = adapterInfoText(adapter.info) || "software adapter";
+            return {
+              ok: false,
+              reason: `WebGPU software adapter is unavailable for model inference (${label}).`,
+            };
+          }
+          return { ok: true };
+        } catch (err) {
+          return { ok: false, reason: `WebGPU adapter check failed: ${String(err)}` };
         }
       };
 
       const initWasm = async () => {
         await ensureModelCacheServiceWorker();
-        const hasAdapter = await ensureWebGpuAdapter();
-        if (!hasAdapter) {
+        const adapter = await ensureWebGpuAdapter();
+        if (!adapter.ok) {
           queuedRunAfterInit = false;
-          setStatus("WebGPU is unavailable in this browser.");
+          setStatus(adapter.reason);
           return;
         }
 
@@ -174,7 +408,8 @@
           setStatus("WebGPU runtime reports unavailable.");
           return;
         }
-        setStatus("ready: select 2+ images and click Run Inference");
+        setStatus(`ready: select 2+ images and click Run ${modelName(selectedModel)}`);
+        syncUi();
         if (queuedRunAfterInit) {
           queuedRunAfterInit = false;
           await runInference();
@@ -184,19 +419,21 @@
       const runInference = async () => {
         if (!wasm) {
           queuedRunAfterInit = true;
-          setStatus("wasm is initializing; run queued...");
+          setStatus(`wasm is initializing; ${modelName(selectedModel)} run queued...`);
           return;
         }
         const files = Array.from(fileInput.files ?? []);
         if (files.length < 2) {
-          setStatus("select at least 2 images");
+          setStatus(`select at least 2 images for ${modelName(selectedModel)}`);
           return;
         }
 
         clearDownload();
+        runInFlight = true;
         runButton.disabled = true;
+        syncUi();
         try {
-          setStatus(`reading ${files.length} images...`);
+          setStatus(`reading ${files.length} images for ${modelName(selectedModel)}...`);
           const images = [];
           for (const file of files) {
             const bytes = new Uint8Array(await file.arrayBuffer());
@@ -204,11 +441,15 @@
           }
 
           const opts = new wasm.WasmInferOptions();
-          opts.set_image_size(Number(imageSizeInput.value || 224));
+          const defaultImageSize = selectedModel === "zipsplat" ? 252 : 224;
+          opts.set_image_size(Number(imageSizeInput.value || defaultImageSize));
+          opts.set_model(selectedModel);
+          opts.set_quality(qualitySelect.value);
+          opts.set_zipsplat_r(Number(zipsplatRInput.value || 2));
           opts.set_max_gaussians(Number(maxGaussiansInput.value || 4096));
           opts.set_opacity_threshold(Number(opacityInput.value || 0.01));
 
-          setStatus("running model inference...");
+          setStatus(`running ${modelName(selectedModel)} inference...`);
           const inferFn =
             wasm.infer_glb_from_image_bytes_multi_async ??
             wasm.infer_glb_from_image_bytes_multi;
@@ -217,18 +458,43 @@
           objectUrl = URL.createObjectURL(blob);
           downloadLink.href = objectUrl;
           downloadLink.style.display = "inline-block";
-          setStatus(`done: generated ${glbBytes.length} bytes`);
+          outputStale = false;
+          downloadLink.textContent = "Download GLB";
+          setStatus(`done: ${modelName(selectedModel)} generated ${glbBytes.length} bytes`);
         } catch (err) {
           console.error(err);
           setStatus(`error: ${String(err)}`);
         } finally {
+          runInFlight = false;
           runButton.disabled = false;
+          syncUi();
         }
       };
 
       runButton.addEventListener("click", () => {
         void runInference();
       });
+
+      qualitySelect.addEventListener("change", () => {
+        if (selectedModel === "zipsplat" && qualityPresetR[qualitySelect.value]) {
+          zipsplatRInput.value = String(qualityPresetR[qualitySelect.value]);
+        }
+        markOutputStale();
+      });
+
+      zipsplatRInput.addEventListener("input", markOutputStale);
+      imageSizeInput.addEventListener("input", markOutputStale);
+      maxGaussiansInput.addEventListener("input", markOutputStale);
+      opacityInput.addEventListener("input", markOutputStale);
+      fileInput.addEventListener("change", markOutputStale);
+
+      for (const button of modelButtons) {
+        button.addEventListener("click", () => {
+          setSelectedModel(button.dataset.model || "yono");
+        });
+      }
+
+      syncUi();
 
       window.addEventListener("beforeunload", () => {
         clearDownload();

@@ -1,5 +1,3 @@
-#![recursion_limit = "512"]
-
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -7,14 +5,23 @@ use burn_reconstruction::{
     backend::default_device, ComponentLoadReport, ForwardTimings, GlbExportOptions,
     GlbExportReport, GlbSortMode, ImageToGaussianPipeline, PipelineConfig, PipelineGaussians,
     PipelineModel, PipelineQuality, PipelineWeights, YonoWeightFormat, YonoWeightPrecision,
-    YonoWeights,
+    YonoWeights, ZipSplatWeightFormat, ZipSplatWeightPrecision, ZipSplatWeights,
 };
 use clap::{Parser, ValueEnum};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
+enum ModelArg {
+    Yono,
+    Zipsplat,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
 enum QualityArg {
     Fast,
+    Full,
     Balanced,
+    Compact,
+    Preview,
     High,
 }
 
@@ -49,17 +56,26 @@ enum WeightPrecisionArg {
     long_about = None
 )]
 struct CliConfig {
-    #[arg(long, required_unless_present = "rev", num_args = 2..)]
+    #[arg(long, required_unless_present = "rev", num_args = 1..)]
     images: Vec<PathBuf>,
 
     #[arg(long, default_value = "outputs/gaussians.glb")]
     output: PathBuf,
 
-    #[arg(long, default_value_t = 224)]
-    image_size: usize,
+    #[arg(long)]
+    image_size: Option<usize>,
+
+    #[arg(long, value_enum, default_value_t = ModelArg::Yono)]
+    model: ModelArg,
 
     #[arg(long, value_enum, default_value_t = QualityArg::Balanced)]
     quality: QualityArg,
+
+    #[arg(
+        long,
+        help = "ZipSplat compression ratio r; higher values emit fewer Gaussians"
+    )]
+    zipsplat_r: Option<usize>,
 
     #[arg(long)]
     max_gaussians: Option<usize>,
@@ -82,8 +98,11 @@ struct CliConfig {
     #[arg(long, default_value_t = false)]
     single_sync_profile: bool,
 
-    #[arg(long, value_enum, default_value_t = WeightFormatArg::Bpk)]
-    weights_format: WeightFormatArg,
+    #[arg(long, default_value_t = false)]
+    strict_load: bool,
+
+    #[arg(long, value_enum)]
+    weights_format: Option<WeightFormatArg>,
 
     #[arg(long, value_enum, default_value_t = WeightPrecisionArg::F16)]
     weights_precision: WeightPrecisionArg,
@@ -93,6 +112,9 @@ struct CliConfig {
 
     #[arg(long)]
     head_weights: Option<PathBuf>,
+
+    #[arg(long)]
+    zipsplat_weights: Option<PathBuf>,
 
     #[arg(
         long,
@@ -110,17 +132,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let device = default_device();
 
-    if args.image_size % 14 != 0 {
-        return Err(format!(
-            "--image-size must be divisible by 14, got {}",
-            args.image_size
-        )
-        .into());
+    let model = match args.model {
+        ModelArg::Yono => PipelineModel::Yono,
+        ModelArg::Zipsplat => PipelineModel::ZipSplat,
+    };
+    let image_size = args
+        .image_size
+        .unwrap_or_else(|| model.capabilities().default_image_size);
+
+    if image_size % 14 != 0 {
+        return Err(format!("--image-size must be divisible by 14, got {}", image_size).into());
     }
-    if args.image_size != 224 {
+
+    if model == PipelineModel::Yono && image_size != 224 {
         return Err(
             "the provided pretrained backbone weights are calibrated for --image-size 224".into(),
         );
+    }
+    if model == PipelineModel::Yono && args.images.len() < 2 {
+        return Err("YoNoSplat expects at least two --images inputs".into());
     }
     if args.bench_iters == 0 {
         return Err("--bench-iters must be > 0".into());
@@ -128,57 +158,115 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let quality = match args.quality {
         QualityArg::Fast => PipelineQuality::Fast,
+        QualityArg::Full => PipelineQuality::Full,
         QualityArg::Balanced => PipelineQuality::Balanced,
+        QualityArg::Compact => PipelineQuality::Compact,
+        QualityArg::Preview => PipelineQuality::Preview,
         QualityArg::High => PipelineQuality::High,
     };
 
-    let weight_format = match args.weights_format {
-        WeightFormatArg::Safetensors => YonoWeightFormat::Safetensors,
-        WeightFormatArg::Bpk => YonoWeightFormat::Burnpack,
-    };
     let weight_precision = match args.weights_precision {
         WeightPrecisionArg::F16 => YonoWeightPrecision::F16,
         WeightPrecisionArg::F32 => YonoWeightPrecision::F32,
     };
 
-    let weights = match (&args.backbone_weights, &args.head_weights) {
-        (Some(backbone), Some(head)) => PipelineWeights::from_yono(
-            YonoWeights::new(backbone.clone(), head.clone())
-                .with_format(weight_format)
-                .with_precision(weight_precision),
-        ),
-        (None, None) => {
-            let weights = PipelineWeights::resolve_or_bootstrap_yono_with_precision(
-                weight_format,
-                weight_precision,
-            )?;
-            println!(
-                "[BOOTSTRAP] using cached YoNo weights:\n  backbone={}\n  head={}\n  precision={:?}",
-                weights.yono.backbone.display(),
-                weights.yono.head.display(),
-                weights.yono.precision
-            );
-            weights
+    let weights = match model {
+        PipelineModel::Yono => {
+            let weight_format = match args.weights_format.unwrap_or(WeightFormatArg::Bpk) {
+                WeightFormatArg::Safetensors => YonoWeightFormat::Safetensors,
+                WeightFormatArg::Bpk => YonoWeightFormat::Burnpack,
+            };
+            match (&args.backbone_weights, &args.head_weights) {
+                (Some(backbone), Some(head)) => PipelineWeights::from_yono(
+                    YonoWeights::new(backbone.clone(), head.clone())
+                        .with_format(weight_format)
+                        .with_precision(weight_precision),
+                ),
+                (None, None) => {
+                    let weights = PipelineWeights::resolve_or_bootstrap_yono_with_precision(
+                        weight_format,
+                        weight_precision,
+                    )?;
+                    if let Some(yono) = weights.yono() {
+                        println!(
+                            "[BOOTSTRAP] using cached YoNo weights:\n  backbone={}\n  head={}\n  precision={:?}",
+                            yono.backbone.display(),
+                            yono.head.display(),
+                            yono.precision
+                        );
+                    }
+                    weights
+                }
+                _ => {
+                    return Err(
+                        "`--backbone-weights` and `--head-weights` must be provided together"
+                            .into(),
+                    );
+                }
+            }
         }
-        _ => {
-            return Err(
-                "`--backbone-weights` and `--head-weights` must be provided together".into(),
-            );
+        PipelineModel::ZipSplat => {
+            if args.backbone_weights.is_some() || args.head_weights.is_some() {
+                return Err(
+                    "`--backbone-weights` and `--head-weights` are YoNo-only; use --zipsplat-weights".into(),
+                );
+            }
+            let format = match args.weights_format.unwrap_or(WeightFormatArg::Bpk) {
+                WeightFormatArg::Safetensors => ZipSplatWeightFormat::Safetensors,
+                WeightFormatArg::Bpk => ZipSplatWeightFormat::Burnpack,
+            };
+            let precision = match args.weights_precision {
+                WeightPrecisionArg::F16 => ZipSplatWeightPrecision::F16,
+                WeightPrecisionArg::F32 => ZipSplatWeightPrecision::F32,
+            };
+            let weights = if let Some(path) = args.zipsplat_weights.clone() {
+                let weights = ZipSplatWeights::new(path)
+                    .with_format(format)
+                    .with_precision(precision);
+                PipelineWeights::from_zipsplat(weights)
+            } else {
+                if !matches!(format, ZipSplatWeightFormat::Burnpack) {
+                    return Err(
+                        "automatic ZipSplat bootstrap imports the official checkpoint to burnpack; provide --zipsplat-weights for safetensors".into(),
+                    );
+                }
+                PipelineWeights::resolve_or_bootstrap_zipsplat_with_precision(precision)?
+            };
+            if let Some(zipsplat) = weights.zipsplat() {
+                println!(
+                    "[BOOTSTRAP] using ZipSplat weights:\n  checkpoint={}\n  format={:?}\n  precision={:?}\n  r={}",
+                    zipsplat.checkpoint.display(),
+                    zipsplat.format,
+                    zipsplat.precision,
+                    args.zipsplat_r
+                        .unwrap_or_else(|| quality.default_zipsplat_r())
+                );
+            }
+            weights
         }
     };
 
     let (pipeline, load_report) = ImageToGaussianPipeline::load(
         device,
         PipelineConfig {
-            model: PipelineModel::Yono,
+            model,
             quality,
-            image_size: args.image_size,
+            image_size,
+            zipsplat_r: args
+                .zipsplat_r
+                .unwrap_or_else(|| quality.default_zipsplat_r()),
         },
         weights,
     )?;
 
     report_apply_summary("backbone", &load_report.backbone);
     report_apply_summary("head", &load_report.head);
+    if args.strict_load {
+        let failures = load_report.strict_failures();
+        if !failures.is_empty() {
+            return Err(format!("strict load validation failed:\n{}", failures.join("\n")).into());
+        }
+    }
 
     let (gaussians, timed) = if args.profile {
         for _ in 0..args.warmup_iters {
@@ -241,7 +329,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     if let Some(profile) = timed.as_ref() {
-        print_profile(profile, &export_report, &export);
+        print_profile(&pipeline, profile, &export_report, &export);
     }
 
     Ok(())
@@ -322,8 +410,19 @@ fn average_duration(samples: &[Duration]) -> Duration {
     Duration::from_secs_f64(total / samples.len() as f64)
 }
 
-fn print_profile(profile: &ProfileSummary, export: &GlbExportReport, options: &GlbExportOptions) {
+fn print_profile(
+    pipeline: &ImageToGaussianPipeline,
+    profile: &ProfileSummary,
+    export: &GlbExportReport,
+    options: &GlbExportOptions,
+) {
     let forward = &profile.timings;
+    println!(
+        "[PROFILE] model={} quality={:?} zipsplat_r={}",
+        pipeline.config().model.display_name(),
+        pipeline.config().quality,
+        pipeline.config().effective_zipsplat_r()
+    );
     println!(
         "[PROFILE] warmup_iters={} bench_iters={}",
         profile.warmup_iters, profile.bench_iters

@@ -1,0 +1,36 @@
+[package]
+name = "burn_zipsplat"
+description = "ZipSplat model pipeline and utilities for Burn"
+version = "0.1.2"
+edition = "2021"
+authors = ["mosure <mitchell@mosure.me>"]
+license = "MIT"
+repository = "https://github.com/mosure/burn_reconstruction"
+
+[features]
+default = ["backend_ndarray", "io", "import"]
+backend_cpu = ["burn/cpu", "burn_dino/backend_cpu", "burn_yono/backend_cpu"]
+backend_cuda = ["burn/cuda", "burn_dino/backend_cuda", "burn_yono/backend_cuda"]
+backend_ndarray = ["burn/ndarray", "burn_dino/backend_ndarray", "burn_yono/backend_ndarray"]
+backend_wgpu = ["burn/wgpu", "burn/webgpu", "burn_dino/backend_wgpu", "burn_yono/backend_wgpu", "wgpu_fusion"]
+wgpu_fusion = ["burn/fusion", "burn_yono/wgpu_fusion"]
+import = ["burn-store", "burn-store/pytorch", "burn_yono/import"]
+io = ["dep:image", "burn_yono/io"]
+
+[dependencies]
+burn-store = { version = "0.19", optional = true }
+burn_dino = { version = "0.7", default-features = false }
+burn_yono = { version = "0.1.2", path = "../burn_yono", default-features = false }
+image = { version = "0.25", default-features = true, optional = true }
+thiserror = "2.0"
+
+[dependencies.burn]
+version = "0.19"
+default-features = false
+features = ["std"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
+[dev-dependencies]
+tempfile = "3.23"

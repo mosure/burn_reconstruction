@@ -1,6 +1,9 @@
 #![cfg(feature = "correctness")]
 
-use std::path::Path;
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 
 use burn::prelude::*;
 use burn::tensor::activation::sigmoid;
@@ -11,14 +14,29 @@ use burn_yono::{
     import::load_yono_head_from_safetensors,
     model::{YonoHeadConfig, YonoHeadInput},
 };
+use burn_zipsplat::{
+    load_multi_image_tensor_from_paths, ZipSplatCompression, ZipSplatConfig, ZipSplatModelBundle,
+    ZipSplatWeightFormat, ZipSplatWeightPrecision, ZipSplatWeights, DEFAULT_IMAGE_SIZE,
+};
 
 type BackendImpl = burn_reconstruction::backend::BackendImpl;
 
 const WEIGHTS_PATH: &str = "assets/models/yono_head_weights.safetensors";
 const REFERENCE_PATH: &str = "assets/fixtures/yono_head_reference.safetensors";
+const ZIPSPLAT_REFERENCE_PATH: &str = "assets/fixtures/zipsplat_reference.safetensors";
 
-fn should_skip() -> bool {
-    !(Path::new(WEIGHTS_PATH).exists() && Path::new(REFERENCE_PATH).exists())
+fn workspace_path(relative: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(relative)
+}
+
+fn default_zipsplat_weights_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Some(path) = env::var_os("ZIPSPLAT_BPK") {
+        return Ok(PathBuf::from(path));
+    }
+    let home = env::var_os("HOME").ok_or("HOME is unset and ZIPSPLAT_BPK was not provided")?;
+    Ok(PathBuf::from(home).join(".burn_reconstruction/models/zipsplat/zipsplat.bpk"))
 }
 
 fn tensor_from_f32<const D: usize>(
@@ -43,6 +61,10 @@ fn assert_tensor_close(
 ) {
     let stats = compute_stats(&actual, &expected)
         .unwrap_or_else(|err| panic!("failed to compute stats for {name}: {err}"));
+    eprintln!(
+        "{name}: mean_abs={} max_abs={} max_rel={} mse={} bounds(mean_abs<={}, max_abs<={}, mse<={})",
+        stats.mean_abs, stats.max_abs, stats.max_rel, stats.mse, mean_abs, max_abs, mse
+    );
 
     assert!(
         stats.within(mean_abs, max_abs, mse),
@@ -51,6 +73,13 @@ fn assert_tensor_close(
         stats.max_abs,
         stats.max_rel,
         stats.mse
+    );
+}
+
+fn assert_shape(name: &'static str, actual: &[usize], expected: &[usize]) {
+    assert_eq!(
+        actual, expected,
+        "{name} shape mismatch: actual={actual:?}, expected={expected:?}"
     );
 }
 
@@ -78,6 +107,33 @@ fn rel_rmse(actual: &[f32], expected: &[f32]) -> f32 {
     (num / den).sqrt() as f32
 }
 
+fn sign_align_quaternions(actual: &[f32], expected: &[f32]) -> Vec<f32> {
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "quaternion length mismatch: {} vs {}",
+        actual.len(),
+        expected.len()
+    );
+    assert_eq!(
+        actual.len() % 4,
+        0,
+        "quaternion tensors must be flattened in groups of four"
+    );
+
+    let mut aligned = Vec::with_capacity(expected.len());
+    for (actual_q, expected_q) in actual.chunks_exact(4).zip(expected.chunks_exact(4)) {
+        let dot = actual_q
+            .iter()
+            .zip(expected_q.iter())
+            .map(|(actual, expected)| actual * expected)
+            .sum::<f32>();
+        let sign = if dot < 0.0 { -1.0 } else { 1.0 };
+        aligned.extend(expected_q.iter().map(|value| sign * value));
+    }
+    aligned
+}
+
 fn read_tensor_optional(
     tensors: &safetensors::tensor::SafeTensors<'_>,
     name: &'static str,
@@ -86,12 +142,22 @@ fn read_tensor_optional(
 }
 
 #[test]
-fn yono_head_pipeline_matches_python_reference() -> Result<(), Box<dyn std::error::Error>> {
-    if should_skip() {
-        eprintln!(
-            "Skipping parity test because fixtures are missing. Run `python tool/export_yono_head_reference.py` first."
-        );
-        return Ok(());
+fn yono_head_pipeline_matches_exported_reference() -> Result<(), Box<dyn std::error::Error>> {
+    let weights_path = workspace_path(WEIGHTS_PATH);
+    let reference_path = workspace_path(REFERENCE_PATH);
+    if !weights_path.exists() {
+        return Err(format!(
+            "missing YoNoSplat head weights at {}",
+            weights_path.display()
+        )
+        .into());
+    }
+    if !reference_path.exists() {
+        return Err(format!(
+            "missing exported YoNoSplat head reference at {}; run `python tool/export_yono_head_reference.py` from the workspace root",
+            reference_path.display()
+        )
+        .into());
     }
 
     let device = <BackendImpl as Backend>::Device::default();
@@ -99,7 +165,7 @@ fn yono_head_pipeline_matches_python_reference() -> Result<(), Box<dyn std::erro
     let (model, apply_result) = load_yono_head_from_safetensors::<BackendImpl>(
         &device,
         YonoHeadConfig::new(),
-        Path::new(WEIGHTS_PATH),
+        weights_path.as_path(),
     )?;
     eprintln!(
         "apply: applied={}, missing={}, unused={}, skipped={}",
@@ -115,7 +181,7 @@ fn yono_head_pipeline_matches_python_reference() -> Result<(), Box<dyn std::erro
         eprintln!("unused: {:?}", apply_result.unused);
     }
 
-    let tensors = load_safetensors(REFERENCE_PATH)?;
+    let tensors = load_safetensors(reference_path.as_path())?;
 
     let (hidden_v, hidden_s) = read_tensor(&tensors, "hidden")?;
     let (pos_v, pos_s) = read_tensor(&tensors, "pos")?;
@@ -417,6 +483,7 @@ fn yono_head_pipeline_matches_python_reference() -> Result<(), Box<dyn std::erro
 
     let gaussians_means_vec = tensor_to_vec(output.gaussians_structured.means)?;
     let gaussians_means_rel = rel_rmse(&gaussians_means_vec, &expected_means);
+    eprintln!("gaussians_means: rel_rmse={gaussians_means_rel} bounds(rel_rmse<=0.05)");
     assert!(
         gaussians_means_rel <= 5e-2,
         "gaussians_means rel_rmse too high: {gaussians_means_rel}"
@@ -522,6 +589,179 @@ fn yono_head_pipeline_matches_python_reference() -> Result<(), Box<dyn std::erro
             4e-4,
         );
     }
+
+    Ok(())
+}
+
+#[test]
+fn zipsplat_pipeline_matches_upstream_reference() -> Result<(), Box<dyn std::error::Error>> {
+    let reference_path = workspace_path(ZIPSPLAT_REFERENCE_PATH);
+    if !reference_path.exists() {
+        return Err(format!(
+            "missing exported ZipSplat reference at {}; run `.venv-zipsplat-ref/bin/python tool/export_zipsplat_reference.py` from the workspace root",
+            reference_path.display()
+        )
+        .into());
+    }
+
+    let weights_path = default_zipsplat_weights_path()?;
+    if !weights_path.exists() {
+        return Err(format!(
+            "missing ZipSplat f32 burnpack at {}; run `cargo run -p burn_reconstruction --bin import -- --model zipsplat --zipsplat-weights ~/.burn_reconstruction/models/zipsplat/zipsplat-da3g-252p.tar --zipsplat-output ~/.burn_reconstruction/models/zipsplat/zipsplat --precision f32` or set ZIPSPLAT_BPK",
+            weights_path.display()
+        )
+        .into());
+    }
+
+    let device = <BackendImpl as Backend>::Device::default();
+    let tensors = load_safetensors(reference_path.as_path())?;
+
+    let (input_images, input_shape) = read_tensor(&tensors, "input_images")?;
+    let input = tensor_from_f32::<5>(
+        input_images.clone(),
+        [
+            input_shape[0],
+            input_shape[1],
+            input_shape[2],
+            input_shape[3],
+            input_shape[4],
+        ],
+        &device,
+    );
+
+    let fixture_paths = vec![
+        workspace_path("assets/images/re10k/0.png"),
+        workspace_path("assets/images/re10k/1.png"),
+        workspace_path("assets/images/re10k/2.png"),
+    ];
+    let loaded_images = load_multi_image_tensor_from_paths::<BackendImpl>(
+        &fixture_paths,
+        DEFAULT_IMAGE_SIZE,
+        &device,
+    )?;
+    assert_tensor_close(
+        "zipsplat_input_images_from_loader",
+        tensor_to_vec(loaded_images)?,
+        input_images,
+        6e-3,
+        4e-2,
+        8e-5,
+    );
+
+    let weights = ZipSplatWeights::new(weights_path)
+        .with_format(ZipSplatWeightFormat::Burnpack)
+        .with_precision(ZipSplatWeightPrecision::F32);
+    let (bundle, report) = ZipSplatModelBundle::<BackendImpl>::load_from_weights_with_config(
+        &device,
+        &weights,
+        ZipSplatConfig::default(),
+    )?;
+    eprintln!(
+        "zipsplat apply: applied={}, missing={}, unused={}, skipped={}",
+        report.model.applied,
+        report.model.missing.len(),
+        report.model.unused.len(),
+        report.model.skipped.len()
+    );
+    if !report.model.missing.is_empty() {
+        eprintln!("zipsplat missing: {:?}", report.model.missing);
+    }
+    if !report.model.unused.is_empty() {
+        eprintln!("zipsplat unused: {:?}", report.model.unused);
+    }
+
+    let (actual, timings) =
+        bundle.forward_from_tensor_timed_with_sync(input, ZipSplatCompression::new(1), true);
+    eprintln!("zipsplat timings: {:?}", timings);
+
+    let (expected_means, expected_means_s) = read_tensor(&tensors, "gaussians_means")?;
+    let (expected_covs, expected_covs_s) = read_tensor(&tensors, "gaussians_covariances")?;
+    let (expected_harmonics, expected_harmonics_s) = read_tensor(&tensors, "gaussians_harmonics")?;
+    let (expected_opacities, expected_opacities_s) = read_tensor(&tensors, "gaussians_opacities")?;
+    let (expected_rotations, expected_rotations_s) = read_tensor(&tensors, "gaussians_rotations")?;
+    let (expected_scales, expected_scales_s) = read_tensor(&tensors, "gaussians_scales")?;
+
+    assert_shape(
+        "zipsplat_gaussians_means",
+        &actual.means.shape().dims::<3>(),
+        &expected_means_s,
+    );
+    assert_shape(
+        "zipsplat_gaussians_covariances",
+        &actual.covariances.shape().dims::<4>(),
+        &expected_covs_s,
+    );
+    assert_shape(
+        "zipsplat_gaussians_harmonics",
+        &actual.harmonics.shape().dims::<4>(),
+        &expected_harmonics_s,
+    );
+    assert_shape(
+        "zipsplat_gaussians_opacities",
+        &actual.opacities.shape().dims::<2>(),
+        &expected_opacities_s,
+    );
+    assert_shape(
+        "zipsplat_gaussians_rotations",
+        &actual.rotations.shape().dims::<3>(),
+        &expected_rotations_s,
+    );
+    assert_shape(
+        "zipsplat_gaussians_scales",
+        &actual.scales.shape().dims::<3>(),
+        &expected_scales_s,
+    );
+
+    assert_tensor_close(
+        "zipsplat_gaussians_means",
+        tensor_to_vec(actual.means)?,
+        expected_means,
+        2e-2,
+        3.5e-1,
+        5e-3,
+    );
+    assert_tensor_close(
+        "zipsplat_gaussians_covariances",
+        tensor_to_vec(actual.covariances)?,
+        expected_covs,
+        2e-3,
+        4e-2,
+        1e-4,
+    );
+    assert_tensor_close(
+        "zipsplat_gaussians_harmonics",
+        tensor_to_vec(actual.harmonics)?,
+        expected_harmonics,
+        4e-2,
+        1.3,
+        4e-3,
+    );
+    assert_tensor_close(
+        "zipsplat_gaussians_opacities",
+        tensor_to_vec(actual.opacities)?,
+        expected_opacities,
+        3e-2,
+        7.5e-1,
+        3e-3,
+    );
+    let actual_rotations = tensor_to_vec(actual.rotations)?;
+    let expected_rotations_aligned = sign_align_quaternions(&actual_rotations, &expected_rotations);
+    assert_tensor_close(
+        "zipsplat_gaussians_rotations",
+        actual_rotations,
+        expected_rotations_aligned,
+        2e-2,
+        1.2,
+        2e-3,
+    );
+    assert_tensor_close(
+        "zipsplat_gaussians_scales",
+        tensor_to_vec(actual.scales)?,
+        expected_scales,
+        2e-3,
+        1e-1,
+        1e-5,
+    );
 
     Ok(())
 }

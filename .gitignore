@@ -2,10 +2,13 @@ __pycache__/
 
 debug/
 target/
+dist/
+.venv-zipsplat-ref/
 **/*.rs.bk
 *.pdb
 
 *.py
+!tool/export_zipsplat_reference.py
 *.safetensors
 
 
@@ -17,6 +20,9 @@ target/
 www/out/
 www/assets/
 tests/web_playwright/node_modules/
+node_modules/
+playwright-report/
+test-results/
 
 
 tmp/
@@ -24,5 +30,6 @@ web_playwright/
 
 assets/models/
 assets/fixtures/
+!assets/fixtures/
+!assets/fixtures/zipsplat_reference.safetensors
 tests/fixtures/
-

@@ -11,7 +11,7 @@
  */
 
 const CACHE_PREFIX = "burn-gaussian-splatting-web";
-const CACHE_VERSION = "v4";
+const CACHE_VERSION = "v6";
 const CACHE_NAME = `${CACHE_PREFIX}-${CACHE_VERSION}`;
 const ABERRATION_MODEL_ORIGIN = "https://aberration.technology";
 
