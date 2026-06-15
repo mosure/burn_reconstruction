@@ -211,20 +211,20 @@ impl ModelSettings {
         };
         match self.model {
             PipelineModel::Yono => format!(
-                "Ready: YoNoSplat • {} detail • {images}",
+                "Ready: YoNoSplat - {} detail - {images}",
                 self.quality_label()
             ),
             PipelineModel::ZipSplat => {
                 if image_count == 0 {
                     return format!(
-                        "Ready: ZipSplat • {} detail • r={} • {images}",
+                        "Ready: ZipSplat - {} detail - r={} - {images}",
                         self.quality_label(),
                         self.zipsplat_r,
                     );
                 }
                 let gaussians = estimate_zipsplat_gaussians(image_count, self);
                 format!(
-                    "Ready: ZipSplat • {} detail • r={} • {images} • ~{} gaussians",
+                    "Ready: ZipSplat - {} detail - r={} - {images} - ~{} gaussians",
                     self.quality_label(),
                     self.zipsplat_r,
                     gaussians
@@ -818,7 +818,7 @@ fn setup_ui(mut commands: Commands) {
                     ));
 
                     panel.spawn((
-                        Text::new("Ready: YoNoSplat • balanced detail • no images"),
+                        Text::new("Ready: YoNoSplat - balanced detail - no images"),
                         TextFont::from_font_size(12.0),
                         TextColor(Color::srgb(0.72, 0.78, 0.88)),
                         ConfigSummaryLabel,
@@ -833,7 +833,9 @@ fn setup_ui(mut commands: Commands) {
                     panel
                         .spawn(Node {
                             flex_direction: FlexDirection::Row,
-                            column_gap: Val::Px(0.0),
+                            flex_wrap: FlexWrap::Wrap,
+                            column_gap: Val::Px(8.0),
+                            row_gap: Val::Px(8.0),
                             ..Node::default()
                         })
                         .with_children(|row| {
@@ -848,6 +850,7 @@ fn setup_ui(mut commands: Commands) {
                                     Node {
                                         min_width: Val::Px(106.0),
                                         justify_content: JustifyContent::Center,
+                                        align_items: AlignItems::Center,
                                         padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
                                         border: UiRect::all(Val::Px(1.0)),
                                         ..Node::default()
@@ -3546,7 +3549,7 @@ fn update_config_summary_label(
 ) {
     let mut summary = settings.summary(ui.selected_images.len());
     if ui.output_stale {
-        summary.push_str(" • output stale");
+        summary.push_str(" - output stale");
     }
     for mut text in &mut labels {
         text.0 = summary.clone();
@@ -4028,6 +4031,19 @@ mod tests {
         assert!(summary.contains("r=4"));
         assert!(summary.contains("~"));
         assert!(summary.contains("gaussians"));
+        assert!(summary.is_ascii());
+    }
+
+    #[test]
+    fn yono_summary_uses_ascii_safe_separators() {
+        let settings = ModelSettings {
+            model: PipelineModel::Yono,
+            quality: PipelineQuality::Balanced,
+            zipsplat_r: 2,
+        };
+        let summary = settings.summary(0);
+        assert_eq!(summary, "Ready: YoNoSplat - balanced detail - no images");
+        assert!(summary.is_ascii());
     }
 
     #[test]

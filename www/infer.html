@@ -87,19 +87,14 @@
       }
       .segmented {
         display: inline-flex;
-        overflow: hidden;
-        border: 1px solid var(--line);
-        border-radius: 8px;
+        gap: 8px;
+        flex-wrap: wrap;
       }
       .segment {
         min-width: 112px;
-        border: 0;
-        border-right: 1px solid var(--line);
-        border-radius: 0;
+        border: 1px solid var(--line);
+        border-radius: 7px;
         padding: 8px 11px;
-      }
-      .segment:last-child {
-        border-right: 0;
       }
       .segment[aria-pressed="true"] {
         background: #17314d;
@@ -180,7 +175,7 @@
         <span id="zipsplat-r-value" class="value">2</span>
         <span class="hint">higher r emits fewer gaussians</span>
       </div>
-      <div id="config-summary" class="summary">Ready: YoNoSplat • balanced detail • no images</div>
+      <div id="config-summary" class="summary">Ready: YoNoSplat - balanced detail - no images</div>
       <div class="controls-grid">
         <div class="field">
           <label for="image-size">Image size</label>
@@ -202,7 +197,7 @@
       <div id="status">initializing wasm...</div>
     </main>
     <script type="module">
-      const SW_VERSION = "v6";
+      const SW_VERSION = "v7";
       const statusEl = document.getElementById("status");
       const fileInput = document.getElementById("images");
       const runButton = document.getElementById("run");
@@ -301,10 +296,10 @@
         let summary =
           selectedModel === "zipsplat"
             ? count > 0
-              ? `Ready: ZipSplat • ${quality} detail • r=${zipsplatRInput.value || 2} • ${imageCountLabel()} • ~${estimateZipSplatGaussians()} gaussians`
-              : `Ready: ZipSplat • ${quality} detail • r=${zipsplatRInput.value || 2} • no images`
-            : `Ready: YoNoSplat • ${quality} detail • ${imageCountLabel()}`;
-        if (outputStale) summary += " • output stale";
+              ? `Ready: ZipSplat - ${quality} detail - r=${zipsplatRInput.value || 2} - ${imageCountLabel()} - ~${estimateZipSplatGaussians()} gaussians`
+              : `Ready: ZipSplat - ${quality} detail - r=${zipsplatRInput.value || 2} - no images`
+            : `Ready: YoNoSplat - ${quality} detail - ${imageCountLabel()}`;
+        if (outputStale) summary += " - output stale";
         configSummary.textContent = summary;
       };
 
