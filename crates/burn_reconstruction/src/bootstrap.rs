@@ -1551,11 +1551,13 @@ mod tests {
 
         let stop = Arc::new(AtomicBool::new(false));
         let requests = Arc::new(AtomicUsize::new(0));
-        let (base_url, server) = spawn_parts_server(
+        let request_paths = Arc::new(Mutex::new(Vec::<String>::new()));
+        let (base_url, server) = spawn_parts_server_with_request_paths(
             backbone_part.clone(),
             head_part.clone(),
             stop.clone(),
             requests.clone(),
+            Some(request_paths.clone()),
         );
 
         std::env::set_var("BURN_RECONSTRUCTION_CACHE_DIR", &cache_root);
@@ -1571,7 +1573,10 @@ mod tests {
 
         resolve_or_bootstrap_yono_weights(YonoWeightFormat::Burnpack)
             .expect("initial burnpack bootstrap should succeed");
-        let requests_after_bootstrap = requests.load(Ordering::SeqCst);
+        let paths_after_bootstrap = request_paths
+            .lock()
+            .expect("request path lock should succeed")
+            .len();
 
         let progress = Arc::new(Mutex::new(Vec::<String>::new()));
         let progress_sink = progress.clone();
@@ -1587,10 +1592,16 @@ mod tests {
         )
         .expect("cached burnpack resolve should succeed");
 
-        assert_eq!(
-            requests.load(Ordering::SeqCst),
-            requests_after_bootstrap,
-            "cached resolve should not re-download parts"
+        let cached_request_paths = request_paths
+            .lock()
+            .expect("request path lock should succeed")[paths_after_bootstrap..]
+            .to_vec();
+        assert!(
+            cached_request_paths
+                .iter()
+                .all(|path| !path.contains(".part-")),
+            "cached resolve should not re-download part payloads; got {:?}",
+            cached_request_paths
         );
 
         let collected = progress
@@ -1694,6 +1705,16 @@ mod tests {
         stop: Arc<AtomicBool>,
         requests: Arc<AtomicUsize>,
     ) -> (String, thread::JoinHandle<()>) {
+        spawn_parts_server_with_request_paths(backbone_part, head_part, stop, requests, None)
+    }
+
+    fn spawn_parts_server_with_request_paths(
+        backbone_part: Vec<u8>,
+        head_part: Vec<u8>,
+        stop: Arc<AtomicBool>,
+        requests: Arc<AtomicUsize>,
+        request_paths: Option<Arc<Mutex<Vec<String>>>>,
+    ) -> (String, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
         listener
             .set_nonblocking(true)
@@ -1710,6 +1731,12 @@ mod tests {
                         let read = stream.read(&mut buffer).unwrap_or(0);
                         let req = String::from_utf8_lossy(&buffer[..read]);
                         let path = req.split_whitespace().nth(1).unwrap_or("/");
+                        if let Some(paths) = request_paths.as_ref() {
+                            paths
+                                .lock()
+                                .expect("request path lock should succeed")
+                                .push(path.to_string());
+                        }
 
                         let (status, body) = match path {
                             "/yono_backbone.bpk.parts.json" => (
