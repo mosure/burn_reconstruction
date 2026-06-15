@@ -38,9 +38,10 @@ pub use burn_zipsplat::{
 };
 pub use pipeline::{
     ComponentLoadReport, ImageToGaussianPipeline, PipelineConfig, PipelineError,
-    PipelineExportReport, PipelineGaussians, PipelineInputImage, PipelineLoadReport, PipelineModel,
-    PipelineModelCapabilities, PipelineQuality, PipelineQualityControl, PipelineRunOutput,
-    PipelineRunWithCameras, PipelineWeights, ZipSplatQualityLevel, ZIP_SPLAT_QUALITY_PRESETS,
+    PipelineExportReport, PipelineGaussians, PipelineInputImage, PipelineLoadKey,
+    PipelineLoadReport, PipelineModel, PipelineModelCapabilities, PipelineQuality,
+    PipelineQualityControl, PipelineRunOutput, PipelineRunWithCameras, PipelineWeights,
+    ZipSplatQualityLevel, ZIP_SPLAT_QUALITY_PRESETS,
 };
 pub use utils::setup_hooks;
 

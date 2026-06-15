@@ -241,6 +241,30 @@ impl ZipSplatConfig {
     fn params_per_gaussian(&self) -> usize {
         3 + 3 + 4 + 1 + self.d_sh() * 3
     }
+
+    /// Number of patch tokens emitted by one square input view.
+    pub fn patch_tokens_per_view(&self) -> usize {
+        let patches_per_axis = (self.image_size / self.patch_size).max(1);
+        patches_per_axis * patches_per_axis
+    }
+
+    /// Number of scene tokens before ZipSplat compression for `view_count`.
+    pub fn total_tokens_for_views(&self, view_count: usize) -> usize {
+        view_count.max(1) * self.patch_tokens_per_view()
+    }
+
+    /// Expected raw Gaussian count for an input view count and compression.
+    ///
+    /// Mirrors upstream ZipSplat: retain `int(V * T * compression)` scene
+    /// tokens, then decode `gaussians_per_token` Gaussians from each token.
+    pub fn estimated_gaussian_count(
+        &self,
+        view_count: usize,
+        compression: ZipSplatCompression,
+    ) -> usize {
+        let retained = compression.retained_tokens(self.total_tokens_for_views(view_count));
+        retained * self.gaussians_per_token
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2029,6 +2053,24 @@ mod tests {
         assert_eq!(retained_token_count(10, 0.5), 5);
         assert_eq!(retained_token_count(10, 0.25), 2);
         assert_eq!(retained_token_count(3, 0.01), 1);
+    }
+
+    #[test]
+    fn estimated_gaussian_count_matches_upstream_token_formula() {
+        let cfg = ZipSplatConfig::default();
+        assert_eq!(cfg.patch_tokens_per_view(), 18 * 18);
+        assert_eq!(
+            cfg.estimated_gaussian_count(3, ZipSplatCompression::FULL),
+            3 * 18 * 18 * 32
+        );
+        assert_eq!(
+            cfg.estimated_gaussian_count(MAX_VIEWS, ZipSplatCompression::FULL),
+            24 * 18 * 18 * 32
+        );
+        assert_eq!(
+            cfg.estimated_gaussian_count(MAX_VIEWS, ZipSplatCompression::COMPACT),
+            (24 * 18 * 18 / 4) * 32
+        );
     }
 
     #[test]

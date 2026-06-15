@@ -203,6 +203,16 @@ pub struct PipelineConfig {
     pub zipsplat_r: usize,
 }
 
+/// Model-load identity for a pipeline.
+///
+/// Quality/export settings and ZipSplat compression are runtime choices; changing
+/// them must not invalidate already-loaded weights.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PipelineLoadKey {
+    pub model: PipelineModel,
+    pub image_size: usize,
+}
+
 impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
@@ -215,6 +225,13 @@ impl Default for PipelineConfig {
 }
 
 impl PipelineConfig {
+    pub fn load_key(&self) -> PipelineLoadKey {
+        PipelineLoadKey {
+            model: self.model,
+            image_size: self.image_size,
+        }
+    }
+
     pub fn effective_zipsplat_r(&self) -> usize {
         ZipSplatCompression::new(self.zipsplat_r).get()
     }
@@ -528,6 +545,11 @@ pub enum PipelineError {
         config_model: PipelineModel,
         weights_model: PipelineModel,
     },
+    #[error("loaded pipeline key {loaded:?} cannot run request key {requested:?}")]
+    PipelineLoadKeyMismatch {
+        loaded: PipelineLoadKey,
+        requested: PipelineLoadKey,
+    },
     #[error("failed to resolve/bootstrap model weights: {0}")]
     Bootstrap(#[from] ModelBootstrapError),
     #[error("yono pipeline error: {0}")]
@@ -807,6 +829,11 @@ impl ImageToGaussianPipeline {
         &self.cfg
     }
 
+    /// Returns the fields that require a distinct model load.
+    pub fn load_key(&self) -> PipelineLoadKey {
+        self.cfg.load_key()
+    }
+
     /// Returns the internal WGPU device used for inference.
     pub fn device(&self) -> &BackendDevice {
         &self.device
@@ -824,6 +851,15 @@ impl ImageToGaussianPipeline {
             LoadedPipeline::Yono(_) => Err(PipelineError::UnsupportedModel),
             LoadedPipeline::ZipSplat(model) => Ok(model.as_ref()),
         }
+    }
+
+    fn validate_run_config(&self, run_cfg: &PipelineConfig) -> Result<(), PipelineError> {
+        let loaded = self.load_key();
+        let requested = run_cfg.load_key();
+        if loaded != requested {
+            return Err(PipelineError::PipelineLoadKeyMismatch { loaded, requested });
+        }
+        Ok(())
     }
 
     /// Runs multi-view inference from image paths.
@@ -975,6 +1011,48 @@ impl ImageToGaussianPipeline {
         }
     }
 
+    /// Runs in-memory inference with per-request runtime settings.
+    ///
+    /// The loaded model family and image size must match the pipeline load key,
+    /// but export quality and ZipSplat compression can vary between requests.
+    pub fn run_image_bytes_timed_with_cameras_with_config(
+        &self,
+        images: &[PipelineInputImage<'_>],
+        run_cfg: &PipelineConfig,
+        synchronize: bool,
+    ) -> Result<PipelineRunWithCameras, PipelineError> {
+        self.validate_run_config(run_cfg)?;
+        match run_cfg.model {
+            PipelineModel::Yono => {
+                let named_images = normalize_input_images(images);
+                let (output, timings) = self.yono()?.forward_from_image_bytes_timed_with_sync(
+                    named_images.as_slice(),
+                    run_cfg.image_size,
+                    &self.device,
+                    synchronize,
+                )?;
+                let camera_poses = decode_camera_poses(output.camera_poses)?;
+                Ok(PipelineRunWithCameras {
+                    gaussians: output.gaussians_flat,
+                    timings,
+                    camera_poses,
+                })
+            }
+            PipelineModel::ZipSplat => {
+                let output = self.run_zipsplat_image_bytes_timed_with_r(
+                    images,
+                    run_cfg.effective_zipsplat_r(),
+                    synchronize,
+                )?;
+                Ok(PipelineRunWithCameras {
+                    gaussians: output.gaussians,
+                    timings: output.timings,
+                    camera_poses: identity_camera_poses(images.len()),
+                })
+            }
+        }
+    }
+
     /// Runs in-memory inference and returns camera poses for visualization/debugging.
     #[cfg(target_arch = "wasm32")]
     pub async fn run_image_bytes_timed_with_cameras_async(
@@ -1005,6 +1083,54 @@ impl ImageToGaussianPipeline {
             }
             PipelineModel::ZipSplat => {
                 let output = self.run_zipsplat_image_bytes_timed(images, _synchronize)?;
+                Ok(PipelineRunWithCameras {
+                    gaussians: output.gaussians,
+                    timings: output.timings,
+                    camera_poses: identity_camera_poses(images.len()),
+                })
+            }
+        }
+    }
+
+    /// Runs in-memory inference with per-request runtime settings.
+    ///
+    /// The loaded model family and image size must match the pipeline load key,
+    /// but export quality and ZipSplat compression can vary between requests.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn run_image_bytes_timed_with_cameras_with_config_async(
+        &self,
+        images: &[PipelineInputImage<'_>],
+        run_cfg: &PipelineConfig,
+        _synchronize: bool,
+    ) -> Result<PipelineRunWithCameras, PipelineError> {
+        self.validate_run_config(run_cfg)?;
+        match run_cfg.model {
+            PipelineModel::Yono => {
+                let named_images = normalize_input_images(images);
+                let total_start_ms = wasm_now_ms();
+                let output = self.yono()?.forward_from_image_bytes(
+                    named_images.as_slice(),
+                    run_cfg.image_size,
+                    &self.device,
+                )?;
+                let camera_poses = decode_camera_poses_async(output.camera_poses).await?;
+                let mut timings = ForwardTimings::default();
+                let total_secs = ((wasm_now_ms() - total_start_ms) / 1000.0).max(0.0);
+                if total_secs.is_finite() {
+                    timings.total = Duration::from_secs_f64(total_secs);
+                }
+                Ok(PipelineRunWithCameras {
+                    gaussians: output.gaussians_flat,
+                    timings,
+                    camera_poses,
+                })
+            }
+            PipelineModel::ZipSplat => {
+                let output = self.run_zipsplat_image_bytes_timed_with_r(
+                    images,
+                    run_cfg.effective_zipsplat_r(),
+                    _synchronize,
+                )?;
                 Ok(PipelineRunWithCameras {
                     gaussians: output.gaussians,
                     timings: output.timings,
@@ -1085,11 +1211,24 @@ impl ImageToGaussianPipeline {
         images: &[PipelineInputImage<'_>],
         synchronize: bool,
     ) -> Result<PipelineRunOutput, PipelineError> {
+        self.run_zipsplat_image_bytes_timed_with_r(
+            images,
+            self.cfg.effective_zipsplat_r(),
+            synchronize,
+        )
+    }
+
+    fn run_zipsplat_image_bytes_timed_with_r(
+        &self,
+        images: &[PipelineInputImage<'_>],
+        zipsplat_r: usize,
+        synchronize: bool,
+    ) -> Result<PipelineRunOutput, PipelineError> {
         let named_images = normalize_input_images(images);
         let (gaussians, timings) = self.zipsplat()?.forward_from_image_bytes_timed_with_sync(
             named_images.as_slice(),
             self.cfg.image_size,
-            ZipSplatCompression::new(self.cfg.effective_zipsplat_r()),
+            ZipSplatCompression::new(zipsplat_r),
             &self.device,
             synchronize,
         )?;
@@ -1274,6 +1413,28 @@ mod tests {
             .with_model(PipelineModel::ZipSplat)
             .with_zipsplat_r(999);
         assert_eq!(cfg.effective_zipsplat_r(), 16);
+    }
+
+    #[test]
+    fn pipeline_load_key_ignores_runtime_quality_controls() {
+        let base = PipelineConfig::default()
+            .with_model(PipelineModel::ZipSplat)
+            .with_quality(PipelineQuality::Balanced);
+        let compact = base
+            .clone()
+            .with_quality(PipelineQuality::Compact)
+            .with_zipsplat_r(8);
+        assert_eq!(base.load_key(), compact.load_key());
+
+        let larger_image = PipelineConfig {
+            image_size: base.image_size
+                + PipelineModel::ZipSplat.capabilities().image_size_multiple,
+            ..base.clone()
+        };
+        assert_ne!(base.load_key(), larger_image.load_key());
+
+        let yono = PipelineConfig::default().with_model(PipelineModel::Yono);
+        assert_ne!(base.load_key(), yono.load_key());
     }
 
     #[test]

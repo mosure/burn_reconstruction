@@ -244,6 +244,15 @@
         compact: 4,
         preview: 8,
       };
+      const zipsplatPatchSize = 14;
+      const zipsplatGaussiansPerToken = 32;
+      const zipsplatMaxViews = 24;
+
+      const selectedZipSplatR = () =>
+        Math.max(1, Math.min(16, Math.trunc(Number(zipsplatRInput.value || 2))));
+
+      const formatCount = (value) =>
+        String(Math.trunc(value)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
       const imageCountLabel = () => {
         const count = fileInput.files?.length ?? 0;
@@ -252,17 +261,20 @@
         return `${count} images`;
       };
 
-      const estimateZipSplatGaussians = () => {
+      const estimateZipSplatGaussians = (
+        viewCount = Math.max(1, fileInput.files?.length ?? 0),
+        r = selectedZipSplatR(),
+      ) => {
         const imageSize = Number(imageSizeInput.value || 252);
-        const patchesPerAxis = Math.max(1, Math.floor(imageSize / 14));
-        const tokens = Math.max(1, fileInput.files?.length ?? 0) * patchesPerAxis * patchesPerAxis;
-        const retained = Math.max(1, Math.ceil(tokens / Number(zipsplatRInput.value || 2)));
-        return retained * 32;
+        const patchesPerAxis = Math.max(1, Math.floor(imageSize / zipsplatPatchSize));
+        const tokens = Math.max(1, viewCount) * patchesPerAxis * patchesPerAxis;
+        const retained = Math.max(1, Math.floor(tokens / r));
+        return retained * zipsplatGaussiansPerToken;
       };
 
       const modelDetailText = () => {
         if (selectedModel === "zipsplat") {
-          return `ZipSplat uses compression r=${zipsplatRInput.value || 2}; higher r emits fewer gaussians before export filtering.`;
+          return `ZipSplat uses compression r=${selectedZipSplatR()}; gaussian count scales with views (24 views at r=1 emits ${formatCount(estimateZipSplatGaussians(zipsplatMaxViews, 1))} before export filtering).`;
         }
         return "YoNoSplat uses fixed pretrained reconstruction weights. Output detail controls export filtering.";
       };
@@ -296,8 +308,8 @@
         let summary =
           selectedModel === "zipsplat"
             ? count > 0
-              ? `Ready: ZipSplat - ${quality} detail - r=${zipsplatRInput.value || 2} - ${imageCountLabel()} - ~${estimateZipSplatGaussians()} gaussians`
-              : `Ready: ZipSplat - ${quality} detail - r=${zipsplatRInput.value || 2} - no images`
+              ? `Ready: ZipSplat - ${quality} detail - r=${selectedZipSplatR()} - ${imageCountLabel()} - ~${formatCount(estimateZipSplatGaussians())} / ${formatCount(estimateZipSplatGaussians(zipsplatMaxViews))} gaussians`
+              : `Ready: ZipSplat - ${quality} detail - r=${selectedZipSplatR()} - no images`
             : `Ready: YoNoSplat - ${quality} detail - ${imageCountLabel()}`;
         if (outputStale) summary += " - output stale";
         configSummary.textContent = summary;

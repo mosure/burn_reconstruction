@@ -33,7 +33,6 @@ struct CachedPipeline {
 struct WasmPipelineCacheKey {
     model: PipelineModel,
     image_size: usize,
-    zipsplat_r: usize,
     model_root: String,
 }
 
@@ -165,7 +164,7 @@ pub async fn infer_glb_from_image_bytes_multi(
     }
 
     let image_bytes = collect_image_bytes(images)?;
-    ensure_pipeline_loaded(&opts).await?;
+    let run_cfg = ensure_pipeline_loaded(&opts).await?;
 
     let names = (0..image_bytes.len())
         .map(|index| format!("view_{index:02}.png"))
@@ -185,7 +184,11 @@ pub async fn infer_glb_from_image_bytes_multi(
     let synchronize_forward = entry.pipeline.config().model != PipelineModel::ZipSplat;
     let run_result = entry
         .pipeline
-        .run_image_bytes_timed_with_cameras_async(inputs.as_slice(), synchronize_forward)
+        .run_image_bytes_timed_with_cameras_with_config_async(
+            inputs.as_slice(),
+            &run_cfg,
+            synchronize_forward,
+        )
         .await;
     PIPELINE_CACHE.with(|cell| {
         *cell.borrow_mut() = Some(entry);
@@ -248,7 +251,7 @@ fn collect_image_bytes(images: Array) -> Result<Vec<Vec<u8>>, JsValue> {
     Ok(out)
 }
 
-async fn ensure_pipeline_loaded(options: &WasmInferOptions) -> Result<(), JsValue> {
+async fn ensure_pipeline_loaded(options: &WasmInferOptions) -> Result<PipelineConfig, JsValue> {
     let model = parse_model(options.model.as_str())?;
     let image_size = options.image_size as usize;
     if model == PipelineModel::Yono
@@ -262,8 +265,13 @@ async fn ensure_pipeline_loaded(options: &WasmInferOptions) -> Result<(), JsValu
     let key = WasmPipelineCacheKey {
         model,
         image_size,
-        zipsplat_r: options.effective_zipsplat_r(),
         model_root: model_root.clone(),
+    };
+    let cfg = PipelineConfig {
+        image_size,
+        model,
+        zipsplat_r: options.effective_zipsplat_r(),
+        ..PipelineConfig::default()
     };
     let needs_reload = PIPELINE_CACHE.with(|cell| {
         let cache = cell.borrow();
@@ -273,15 +281,9 @@ async fn ensure_pipeline_loaded(options: &WasmInferOptions) -> Result<(), JsValu
         }
     });
     if !needs_reload {
-        return Ok(());
+        return Ok(cfg);
     }
 
-    let cfg = PipelineConfig {
-        image_size,
-        model,
-        zipsplat_r: key.zipsplat_r,
-        ..PipelineConfig::default()
-    };
     let device = default_device();
     ensure_wasm_wgpu_runtime(&device).await;
     let (pipeline, _report) = match model {
@@ -292,7 +294,7 @@ async fn ensure_pipeline_loaded(options: &WasmInferOptions) -> Result<(), JsValu
             let head_parts = fetch_parts_bundle(head_url.as_str()).await?;
             ImageToGaussianPipeline::load_from_yono_parts(
                 device,
-                cfg,
+                cfg.clone(),
                 backbone_parts.as_slice(),
                 head_parts.as_slice(),
             )
@@ -300,7 +302,11 @@ async fn ensure_pipeline_loaded(options: &WasmInferOptions) -> Result<(), JsValu
         PipelineModel::ZipSplat => {
             let model_url = join_url(model_root.as_str(), ZIPSPLAT_BURNPACK_FILE);
             let model_parts = fetch_parts_bundle(model_url.as_str()).await?;
-            ImageToGaussianPipeline::load_from_zipsplat_parts(device, cfg, model_parts.as_slice())
+            ImageToGaussianPipeline::load_from_zipsplat_parts(
+                device,
+                cfg.clone(),
+                model_parts.as_slice(),
+            )
         }
     }
     .map_err(|err| JsValue::from_str(format!("failed to initialize pipeline: {err}").as_str()))?;
@@ -308,7 +314,7 @@ async fn ensure_pipeline_loaded(options: &WasmInferOptions) -> Result<(), JsValu
     PIPELINE_CACHE.with(|cell| {
         *cell.borrow_mut() = Some(CachedPipeline { key, pipeline });
     });
-    Ok(())
+    Ok(cfg)
 }
 
 impl WasmInferOptions {

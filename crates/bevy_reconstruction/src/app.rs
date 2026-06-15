@@ -38,6 +38,8 @@ use burn_reconstruction::pack_gaussian_rows_full_async;
 #[cfg(test)]
 use burn_reconstruction::sanitize_scale_for_viewer;
 use burn_reconstruction::PipelineInputImage;
+#[cfg(not(target_arch = "wasm32"))]
+use burn_reconstruction::PipelineLoadKey;
 use burn_reconstruction::{
     GlbExportOptions, GlbSortMode, ImageToGaussianPipeline, PipelineConfig, PipelineGaussians,
     PipelineModel, PipelineQuality, ZipSplatCompression, ZipSplatConfig,
@@ -197,8 +199,13 @@ impl ModelSettings {
                 "YoNoSplat uses a fixed pretrained reconstruction model. The detail preset only controls exported/viewed gaussian filtering.".to_string()
             }
             PipelineModel::ZipSplat => format!(
-                "ZipSplat uses compression r={}; higher r emits fewer gaussians before export filtering.",
-                self.zipsplat_r
+                "ZipSplat uses compression r={}; gaussian count scales with views (24 views at r=1 emits {} before export filtering).",
+                self.zipsplat_r,
+                format_count(estimate_zipsplat_gaussians_for_views(
+                    24,
+                    self.pipeline_config().image_size,
+                    ZipSplatCompression::FULL.get(),
+                ))
             ),
         }
     }
@@ -223,11 +230,13 @@ impl ModelSettings {
                     );
                 }
                 let gaussians = estimate_zipsplat_gaussians(image_count, self);
+                let max_gaussians = estimate_zipsplat_max_gaussians(self);
                 format!(
-                    "Ready: ZipSplat - {} detail - r={} - {images} - ~{} gaussians",
+                    "Ready: ZipSplat - {} detail - r={} - {images} - ~{} / {} gaussians",
                     self.quality_label(),
                     self.zipsplat_r,
-                    gaussians
+                    format_count(gaussians),
+                    format_count(max_gaussians)
                 )
             }
         }
@@ -1124,7 +1133,11 @@ fn native_run_request(
 
     let synchronize_forward = request.config.model != PipelineModel::ZipSplat;
     let run_output = pipeline
-        .run_image_bytes_timed_with_cameras(inputs.as_slice(), synchronize_forward)
+        .run_image_bytes_timed_with_cameras_with_config(
+            inputs.as_slice(),
+            &request.config,
+            synchronize_forward,
+        )
         .map_err(|err| format!("inference failed: {err}"))?;
 
     log::info!(
@@ -1196,14 +1209,14 @@ fn native_worker_loop(
     command_rx: Receiver<NativeWorkerCommand>,
     event_tx: Sender<NativeWorkerEvent>,
 ) {
-    let mut pipeline: Option<(PipelineConfig, ImageToGaussianPipeline)> = None;
+    let mut pipeline: Option<(PipelineLoadKey, ImageToGaussianPipeline)> = None;
 
     while let Ok(command) = command_rx.recv() {
         match command {
             NativeWorkerCommand::Run(request) => {
                 let needs_load = pipeline
                     .as_ref()
-                    .map(|(cfg, _)| cfg != &request.config)
+                    .map(|(key, _)| key != &request.config.load_key())
                     .unwrap_or(true);
                 if needs_load {
                     send_worker_status(
@@ -1215,7 +1228,7 @@ fn native_worker_loop(
                     );
                     match native_load_pipeline(&event_tx, request.config.clone()) {
                         Ok(loaded) => {
-                            pipeline = Some((request.config.clone(), loaded));
+                            pipeline = Some((request.config.load_key(), loaded));
                         }
                         Err(err) => {
                             let _ = event_tx.send(NativeWorkerEvent::Failed(err));
@@ -1844,10 +1857,15 @@ fn queue_wasm_inference_if_requested(
         config: config.clone(),
     });
 
+    if runtime.run_task.is_some() {
+        ui.status = "reconstruction already running; queued another run...".to_string();
+        return;
+    }
+
     if runtime
         .pipeline
         .as_ref()
-        .map(|pipeline| pipeline.config() != &config)
+        .map(|pipeline| pipeline.load_key() != config.load_key())
         .unwrap_or(false)
     {
         runtime.pipeline = None;
@@ -1861,19 +1879,7 @@ fn queue_wasm_inference_if_requested(
         return;
     }
     if runtime.pipeline.is_none() {
-        ui.status = format!(
-            "loading {} weights; reconstruction queued...",
-            config.model.display_name()
-        );
-        let progress = runtime.progress.clone();
-        runtime.model_load_task = Some(
-            AsyncComputeTaskPool::get()
-                .spawn_local(async move { wasm_load_pipeline(config, progress).await }),
-        );
-        return;
-    }
-    if runtime.run_task.is_some() {
-        ui.status = "reconstruction already running; queued another run...".to_string();
+        start_wasm_model_load(ui.as_mut(), runtime.as_mut(), config);
         return;
     }
 
@@ -2079,6 +2085,12 @@ fn start_wasm_run_if_ready(ui: &mut UiState, runtime: &mut WasmInferenceRuntime)
         runtime.pending_run = Some(request);
         return;
     };
+    if pipeline.load_key() != request.config.load_key() {
+        let reload_config = request.config.clone();
+        runtime.pending_run = Some(request);
+        start_wasm_model_load(ui, runtime, reload_config);
+        return;
+    }
     runtime.run_requested = false;
     let image_count = request.images.len();
     ui.status = format!(
@@ -2089,6 +2101,31 @@ fn start_wasm_run_if_ready(ui: &mut UiState, runtime: &mut WasmInferenceRuntime)
         let result = wasm_run_request(&pipeline, &request).await;
         (pipeline, result)
     }));
+}
+
+#[cfg(target_arch = "wasm32")]
+fn start_wasm_model_load(
+    ui: &mut UiState,
+    runtime: &mut WasmInferenceRuntime,
+    config: PipelineConfig,
+) {
+    if runtime.model_load_task.is_some() {
+        ui.status = format!(
+            "loading {} weights; reconstruction queued...",
+            config.model.display_name()
+        );
+        return;
+    }
+    runtime.pipeline = None;
+    ui.status = format!(
+        "loading {} weights; reconstruction queued...",
+        config.model.display_name()
+    );
+    let progress = runtime.progress.clone();
+    runtime.model_load_task = Some(
+        AsyncComputeTaskPool::get()
+            .spawn_local(async move { wasm_load_pipeline(config, progress).await }),
+    );
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -2168,7 +2205,11 @@ async fn wasm_run_request(
 
     let synchronize_forward = request.config.model != PipelineModel::ZipSplat;
     let run_output = pipeline
-        .run_image_bytes_timed_with_cameras_async(inputs.as_slice(), synchronize_forward)
+        .run_image_bytes_timed_with_cameras_with_config_async(
+            inputs.as_slice(),
+            &request.config,
+            synchronize_forward,
+        )
         .await
         .map_err(|err| format!("inference failed: {err}"))?;
 
@@ -3318,10 +3359,43 @@ fn frustum_half_extents(base_half: f32, image_aspect: f32) -> (f32, f32) {
 
 fn estimate_zipsplat_gaussians(image_count: usize, settings: ModelSettings) -> usize {
     let image_size = settings.pipeline_config().image_size;
-    let patches_per_axis = image_size / 14;
-    let tokens = image_count.max(1) * patches_per_axis * patches_per_axis;
-    let retained = ZipSplatCompression::new(settings.zipsplat_r).retained_tokens(tokens);
-    retained * ZipSplatConfig::default().gaussians_per_token
+    estimate_zipsplat_gaussians_for_views(image_count, image_size, settings.zipsplat_r)
+}
+
+fn estimate_zipsplat_max_gaussians(settings: ModelSettings) -> usize {
+    let max_views = PipelineModel::ZipSplat
+        .capabilities()
+        .max_views
+        .unwrap_or_else(|| settings.model.capabilities().min_views.max(1));
+    estimate_zipsplat_gaussians_for_views(
+        max_views,
+        settings.pipeline_config().image_size,
+        settings.zipsplat_r,
+    )
+}
+
+fn estimate_zipsplat_gaussians_for_views(
+    image_count: usize,
+    image_size: usize,
+    zipsplat_r: usize,
+) -> usize {
+    let cfg = ZipSplatConfig {
+        image_size,
+        ..ZipSplatConfig::default()
+    };
+    cfg.estimated_gaussian_count(image_count, ZipSplatCompression::new(zipsplat_r))
+}
+
+fn format_count(value: usize) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (idx, ch) in digits.chars().rev().enumerate() {
+        if idx > 0 && idx % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out.chars().rev().collect()
 }
 
 fn settings_ready_status(settings: ModelSettings, image_count: usize) -> String {
@@ -4023,12 +4097,13 @@ mod tests {
     fn zipsplat_summary_reports_compression_estimate() {
         let settings = ModelSettings {
             model: PipelineModel::ZipSplat,
-            quality: PipelineQuality::Compact,
-            zipsplat_r: 4,
+            quality: PipelineQuality::Full,
+            zipsplat_r: 1,
         };
-        let summary = settings.summary(2);
+        let summary = settings.summary(3);
         assert!(summary.contains("ZipSplat"));
-        assert!(summary.contains("r=4"));
+        assert!(summary.contains("r=1"));
+        assert!(summary.contains("31,104 / 248,832"));
         assert!(summary.contains("~"));
         assert!(summary.contains("gaussians"));
         assert!(summary.is_ascii());

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import path from "node:path";
 
 test("infer page exposes model and ZipSplat quality controls", async ({ page }) => {
   await page.goto("/infer.html");
@@ -20,6 +21,14 @@ test("infer page exposes model and ZipSplat quality controls", async ({ page }) 
   await expect(page.locator("#zipsplat-settings")).toBeVisible();
   await expect(page.locator("#image-size")).toHaveValue("252");
   await expect(page.locator("#config-summary")).toContainText("ZipSplat");
+  await page.locator("#quality").selectOption("full");
+  await page.locator("#images").setInputFiles([
+    path.resolve("assets/images/re10k/0.png"),
+    path.resolve("assets/images/re10k/1.png"),
+    path.resolve("assets/images/re10k/2.png"),
+  ]);
+  await expect(page.locator("#zipsplat-r")).toHaveValue("1");
+  await expect(page.locator("#config-summary")).toContainText("31,104 / 248,832");
   await page.locator("#quality").selectOption("compact");
   await expect(page.locator("#zipsplat-r")).toHaveValue("4");
   await expect(page.locator("#zipsplat-r-value")).toHaveText("4");
