@@ -597,8 +597,10 @@ impl ImageToGaussianPipeline {
                 ))
             }
             (PipelineModel::ZipSplat, PipelineWeights::ZipSplat(weights)) => {
-                let mut model_cfg = ZipSplatConfig::default();
-                model_cfg.image_size = cfg.image_size;
+                let model_cfg = ZipSplatConfig {
+                    image_size: cfg.image_size,
+                    ..ZipSplatConfig::default()
+                };
                 let (zipsplat, report) = ZipSplatModelBundle::load_from_weights_with_config(
                     &device, &weights, model_cfg,
                 )?;
@@ -711,8 +713,10 @@ impl ImageToGaussianPipeline {
         match cfg.model {
             PipelineModel::Yono => Err(PipelineError::UnsupportedModel),
             PipelineModel::ZipSplat => {
-                let mut model_cfg = ZipSplatConfig::default();
-                model_cfg.image_size = cfg.image_size;
+                let model_cfg = ZipSplatConfig {
+                    image_size: cfg.image_size,
+                    ..ZipSplatConfig::default()
+                };
                 let (zipsplat, report) =
                     ZipSplatModelBundle::load_from_burnpack_part_bytes_with_progress(
                         &device,

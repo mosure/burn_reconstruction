@@ -509,9 +509,9 @@ impl<B: Backend> ZipSplatSelfAttention<B> {
                 head_dim as i32,
             ])
             .permute([2, 0, 3, 1, 4]);
-        let q_raw: Tensor<B, 4> = qkv.clone().slice([0..1]).squeeze_dim(0);
-        let k_raw: Tensor<B, 4> = qkv.clone().slice([1..2]).squeeze_dim(0);
-        let v: Tensor<B, 4> = qkv.slice([2..3]).squeeze_dim(0);
+        let q_raw: Tensor<B, 4> = qkv.clone().slice_dim(0, 0..1).squeeze_dim(0);
+        let k_raw: Tensor<B, 4> = qkv.clone().slice_dim(0, 1..2).squeeze_dim(0);
+        let v: Tensor<B, 4> = qkv.slice_dim(0, 2..3).squeeze_dim(0);
         let q = self.q_norm.forward(q_raw);
         let k = self.k_norm.forward(k_raw);
         let attn = softmax(q.matmul(k.swap_dims(2, 3)).mul_scalar(scale), 3);
@@ -855,8 +855,10 @@ impl<B: Backend> CrossAttention<B> {
                 head_dim as i32,
             ])
             .permute([2, 0, 3, 1, 4]);
-        let k = self.k_norm.forward(kv.clone().slice([0..1]).squeeze_dim(0));
-        let v = kv.slice([1..2]).squeeze_dim(0);
+        let k = self
+            .k_norm
+            .forward(kv.clone().slice_dim(0, 0..1).squeeze_dim(0));
+        let v = kv.slice_dim(0, 1..2).squeeze_dim(0);
         let attn = softmax(q.matmul(k.swap_dims(2, 3)).mul_scalar(scale), 3);
         let out =
             attn.matmul(v)
@@ -1728,7 +1730,7 @@ fn append_image_chw_f32(image: image::DynamicImage, image_size: usize, out: &mut
 }
 
 fn validate_image_request(count: usize, image_size: usize) -> Result<(), ZipSplatPipelineError> {
-    if image_size % IMAGE_SIZE_MULTIPLE != 0 {
+    if !image_size.is_multiple_of(IMAGE_SIZE_MULTIPLE) {
         return Err(ZipSplatPipelineError::InvalidImageSize(image_size));
     }
     if !(MIN_VIEWS..=MAX_VIEWS).contains(&count) {

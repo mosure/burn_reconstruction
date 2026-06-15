@@ -190,7 +190,7 @@ fn import_yono(args: &ImportConfig) -> Result<(), Box<dyn std::error::Error>> {
                 checkpoint_path.display()
             );
             if args.precision.include_f32() {
-                maybe_write_parts(checkpoint_path.as_path(), &args, "backbone f32")?;
+                maybe_write_parts(checkpoint_path.as_path(), args, "backbone f32")?;
             }
             if args.precision.include_f16() {
                 let f16_path = convert_burnpack_to_f16(
@@ -198,7 +198,7 @@ fn import_yono(args: &ImportConfig) -> Result<(), Box<dyn std::error::Error>> {
                     args.backbone_output.as_path(),
                 )?;
                 println!("Saved backbone f16 checkpoint to {}", f16_path.display());
-                maybe_write_parts(f16_path.as_path(), &args, "backbone f16")?;
+                maybe_write_parts(f16_path.as_path(), args, "backbone f16")?;
             }
         }
     }
@@ -227,13 +227,13 @@ fn import_yono(args: &ImportConfig) -> Result<(), Box<dyn std::error::Error>> {
             let checkpoint_path = save_yono_head_record_bpk(&model, args.head_output.as_path())?;
             println!("Saved head f32 checkpoint to {}", checkpoint_path.display());
             if args.precision.include_f32() {
-                maybe_write_parts(checkpoint_path.as_path(), &args, "head f32")?;
+                maybe_write_parts(checkpoint_path.as_path(), args, "head f32")?;
             }
             if args.precision.include_f16() {
                 let f16_path =
                     convert_burnpack_to_f16(checkpoint_path.as_path(), args.head_output.as_path())?;
                 println!("Saved head f16 checkpoint to {}", f16_path.display());
-                maybe_write_parts(f16_path.as_path(), &args, "head f16")?;
+                maybe_write_parts(f16_path.as_path(), args, "head f16")?;
             }
         }
     }

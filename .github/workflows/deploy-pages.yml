@@ -32,7 +32,13 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - name: install wasm-bindgen-cli
-        run: cargo install wasm-bindgen-cli --version 0.2.113 --locked
+        run: |
+          WASM_BINDGEN_VERSION="$(awk '
+            $0 == "name = \"wasm-bindgen\"" { found = 1; next }
+            found && $1 == "version" { gsub(/"/, "", $3); print $3; exit }
+          ' Cargo.lock)"
+          test -n "${WASM_BINDGEN_VERSION}"
+          cargo install wasm-bindgen-cli --version "${WASM_BINDGEN_VERSION}" --locked
 
       - name: build web wasm
         run: ./scripts/build_web.sh

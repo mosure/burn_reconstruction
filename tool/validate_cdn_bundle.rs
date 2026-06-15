@@ -121,9 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ModelArg::Zipsplat => PipelineModel::ZipSplat,
     };
     let capabilities = model.capabilities();
-    let image_size = args
-        .image_size
-        .unwrap_or_else(|| capabilities.default_image_size);
+    let image_size = args.image_size.unwrap_or(capabilities.default_image_size);
     if image_size % capabilities.image_size_multiple != 0 {
         return Err(format!(
             "--image-size must be divisible by {}, got {}",

@@ -283,7 +283,7 @@ struct NativeRunRequest {
 #[cfg(not(target_arch = "wasm32"))]
 enum NativeWorkerEvent {
     Status(String),
-    Completed(NativeRunResult),
+    Completed(Box<NativeRunResult>),
     Failed(String),
 }
 
@@ -1234,7 +1234,7 @@ fn native_worker_loop(
 
                 match result {
                     Ok(done) => {
-                        let _ = event_tx.send(NativeWorkerEvent::Completed(done));
+                        let _ = event_tx.send(NativeWorkerEvent::Completed(Box::new(done)));
                     }
                     Err(err) => {
                         let _ = event_tx.send(NativeWorkerEvent::Failed(err));
@@ -1767,6 +1767,7 @@ fn poll_native_worker_events(
                 ui.status = status;
             }
             NativeWorkerEvent::Completed(done) => {
+                let done = *done;
                 let handle = clouds.add(done.cloud);
 
                 if let Some(entity) = ui.active_cloud.take() {
