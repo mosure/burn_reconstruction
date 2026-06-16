@@ -21,6 +21,7 @@ www/out/
 www/assets/
 tests/web_playwright/node_modules/
 node_modules/
+package-lock.json
 playwright-report/
 test-results/
 
@@ -31,5 +32,4 @@ web_playwright/
 assets/models/
 assets/fixtures/
 !assets/fixtures/
-!assets/fixtures/zipsplat_reference.safetensors
 tests/fixtures/
